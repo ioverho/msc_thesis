@@ -112,3 +112,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Ivo's additions
+klad*.*
+*/data/*/
+/misc
+.*cache
+/checkpoints
+/msc_thesis
+*.tmp
+*.pt

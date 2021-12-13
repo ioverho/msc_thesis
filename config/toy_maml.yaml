@@ -1,0 +1,22 @@
+model:
+  hidden_dim: 40
+
+train:
+  epochs: 10000
+  meta_batches: 25
+  adaptation_steps: 1
+  K_support: 10
+  K_query: 10
+  K_test: 5
+  adapt_lr: 0.01 # alpha
+  meta_lr: 0.001 # beta
+  first_order_train: True
+  first_order_test: True
+  verbosity: 500
+
+run:
+  experiment_name: MAML_toy
+  seed: 610
+  gpu: 1
+  deterministic: False
+  debug: False
