@@ -1,21 +1,22 @@
-from torch.utils.data import Dataset, DataLoader
 import os
 import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, NamedTuple
+from typing import List, Tuple
 from collections import Counter, defaultdict
 
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Dataset, DataLoader
 import torchtext
 from torchtext.vocab import Vocab, vocab, build_vocab_from_iterator, Vectors
 import pandas as pd
 
 from morphological_tagging.data.lemma_script import LemmaScriptGenerator
+
 
 class FastText(Vectors):
 
@@ -111,8 +112,26 @@ class Document:
         self, context_emb: torch.Tensor, model_name: str = "Undefined"
     ):
 
-        self.context_emb = context_emb
         self.model_name = model_name
+        self.context_emb = context_emb
+
+    @property
+    def pretrained_embeddings(self):
+        pretrained_embeds = []
+
+        if hasattr(self, "word_emb"):
+            pretrained_embeds.append(self.word_emb)
+
+        if hasattr(self, "context_emb"):
+            pretrained_embeds.append(self.context_emb)
+
+        if len(pretrained_embeds) == 0:
+            raise ValueError("Document has no pretrained embeddings.")
+        else:
+            pretrained_embeds = torch.cat(pretrained_embeds, dim=-1)
+            # TODO (ivo): add device support
+
+        return pretrained_embeds
 
 
 @dataclass
@@ -145,57 +164,68 @@ class DocumentCorpus(Dataset):
         self.token_vocab = build_vocab_from_iterator(
             [[t for t in d.tokens] for d in self.docs],
             specials=[self.unk_token, self.pad_token],
-            special_first=True
+            special_first=True,
         )
         self.token_vocab.set_default_index(self.token_vocab[self.unk_token])
 
         self.char_vocab = build_vocab_from_iterator(
             [[c for c in t] for d in self.docs for t in d.tokens],
             specials=[self.unk_token, self.pad_token],
-            special_first=True
+            special_first=True,
         )
         self.char_vocab.set_default_index(self.token_vocab[self.unk_token])
 
         self.morph_tag_vocab = {
-            k: v for v, k in enumerate(sorted(
-                {tag for d in self.docs for tagset in d.morph_tags for tag in tagset}
-                ))
-            }
-
+            k: v
+            for v, k in enumerate(
+                sorted(
+                    {
+                        tag
+                        for d in self.docs
+                        for tagset in d.morph_tags
+                        for tag in tagset
+                    }
+                )
+            )
+        }
 
     def _move_to_pt(self):
 
         for d in self.docs:
             chars_tensor = [
-                    torch.tensor(self.char_vocab.lookup_indices([c for c in t]),
-                                 dtype=torch.long
-                                 #TODO (ivo): add device support
-                                )
-                    for t in d.tokens
-                ]
+                torch.tensor(
+                    self.char_vocab.lookup_indices([c for c in t]),
+                    dtype=torch.long
+                    # TODO (ivo): add device support
+                )
+                for t in d.tokens
+            ]
 
             tokens_tensor = torch.tensor(
                 self.token_vocab.lookup_indices([t for t in d.tokens]),
                 dtype=torch.long
-                #TODO (ivo): add device support
+                # TODO (ivo): add device support
             )
 
-            morph_tags_tensor = torch.cat([
-                F.one_hot(
-                    torch.tensor(
-                        [self.morph_tag_vocab.get(tag, '_') for tag in tagset],
-                        dtype=torch.long
-                        #TODO (ivo): add device support
-                        ),
-                    len(self.morph_tag_vocab)
-                )[:,:-1]
-            for tagset in d.morph_tags])
-
-            d.set_tensors(
-                chars_tensor,
-                tokens_tensor,
-                morph_tags_tensor
+            morph_tags_tensor = torch.stack(
+                [
+                    torch.sum(
+                        F.one_hot(
+                            torch.tensor(
+                                [self.morph_tag_vocab.get(tag, "_") for tag in tagset],
+                                dtype=torch.long
+                                # TODO (ivo): add device support
+                            ),
+                            len(self.morph_tag_vocab),
+                        )[:, :-1],
+                        dim=0,
+                    )
+                    for tagset in d.morph_tags
+                ],
+                dim=0,
             )
+
+            d.set_tensors(chars_tensor, tokens_tensor, morph_tags_tensor)
 
     def parse_tree_file(self, fp: str):
         """Parse a single document with CONLL-U trees into a list of Documents.
@@ -341,7 +371,9 @@ class DocumentCorpus(Dataset):
         # Generate script to class conversion
         self.script_to_id = {
             k: i
-            for i, (k, _) in enumerate(sorted(self.script_counter.items(), key=lambda x: x[1], reverse=True))
+            for i, (k, _) in enumerate(
+                sorted(self.script_counter.items(), key=lambda x: x[1], reverse=True)
+            )
         }
 
         self.id_to_script = list(self.script_to_id.keys())
@@ -351,10 +383,10 @@ class DocumentCorpus(Dataset):
 
             self.docs[i].set_lemma_tags(
                 torch.tensor(
-                    [self.script_to_id[script] for script in doc_scripts]
-                    , dtype = torch.long #TODO (ivo) add device support
-                    )
+                    [self.script_to_id[script] for script in doc_scripts],
+                    dtype=torch.long,  # TODO (ivo) add device support
                 )
+            )
 
     def lemma_tags_overview(self, n: int = 11) -> pd.DataFrame:
         """Get the most common lemma scripts and some examples.
@@ -363,7 +395,9 @@ class DocumentCorpus(Dataset):
             n (int, optional): number of scripts to show. Defaults to 11.
         """
 
-        most_common_rules = [[script, count] for script, count in self.script_counter.most_common(n)]
+        most_common_rules = [
+            [script, count] for script, count in self.script_counter.most_common(n)
+        ]
 
         for entry in most_common_rules:
             entry.append(self.script_examples[entry[0]])
@@ -371,3 +405,56 @@ class DocumentCorpus(Dataset):
         df = pd.DataFrame(most_common_rules, columns=["Rule", "Count", "Examples"])
 
         return df
+
+    def collate_batch(self, batch) -> Tuple[torch.Tensor]:
+
+        docs_subset = [
+            [
+                d.chars_tensor,
+                d.tokens_tensor,
+                d.pretrained_embeddings,
+                d.morph_tags_tensor,
+                d.lemma_tags_tensor,
+            ]
+            for d in batch
+        ]
+
+        chars, tokens, pretrained_embeddings, morph_tags, lemma_tags = list(
+            map(list, zip(*docs_subset))
+        )
+
+        # Characters [T_c, B]
+        char_lens = torch.tensor(
+            [c.size(0) for seq in chars for c in seq], dtype=torch.long
+        )
+
+        chars = pad_sequence(
+            [c for seq in chars for c in seq],
+            padding_value=self.char_vocab[self.pad_token],
+        )
+
+        # Tokens [T_t, B]
+        token_lens = torch.tensor([seq.size(0) for seq in tokens], dtype=torch.long)
+
+        tokens = pad_sequence(tokens, padding_value=0)
+
+        pretrained_embeddings = pad_sequence(pretrained_embeddings, padding_value=0)
+
+        # Tags [T_t x B, C]/[T_t x B]
+        morph_tags = torch.cat(morph_tags)
+
+        lemma_tags = torch.cat(lemma_tags)
+
+        return char_lens, chars, token_lens, tokens, pretrained_embeddings, morph_tags, lemma_tags
+
+    @property
+    def pretrained_embeddings_dim(self):
+
+        if len(self.docs) == 0:
+            raise ValueError("This corpus has no documents.")
+
+        else:
+            try:
+                return self.docs[0].pretrained_embeddings.size(-1)
+            except ValueError:
+                return 0

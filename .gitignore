@@ -114,6 +114,7 @@ dmypy.json
 .pyre/
 
 # Ivo's additions
+klad.py
 klad*.*
 */data/*/
 /misc
