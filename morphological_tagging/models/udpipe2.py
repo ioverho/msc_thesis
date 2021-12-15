@@ -3,6 +3,7 @@ from typing import Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributions as D
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import pytorch_lightning as pl
 
@@ -27,11 +28,14 @@ class UDPipe2(pl.LightningModule):
         c2w_kwargs: dict,
         n_lemma_scripts: int,
         n_morph_tags: int,
-        pad_token: int = 1,
+        unk_token: str = "<UNK>",
+        pad_token: str = "<PAD>",
         w_embedding_dim: int = 512,
         pretrained_embedding_dim: int = 300,
         udpipe_bidirectional: bool = True,
         udpipe_rnn_dim: int = 512,
+        dropout_p : float = 0.5,
+        token_mask_p: float = 0.2
     ) -> None:
         super().__init__()
 
@@ -48,6 +52,8 @@ class UDPipe2(pl.LightningModule):
             padding_idx=token_vocab[pad_token],
         )
 
+        self.embed_dropout = nn.Dropout(p=dropout_p)
+
         # ======================================================================
         # Word-level recurrent layers
         # ======================================================================
@@ -56,22 +62,28 @@ class UDPipe2(pl.LightningModule):
         )
         self.udpipe_output_dim = (2 if udpipe_bidirectional else 1) * udpipe_rnn_dim
 
-        self.rnn_1 = nn.LSTM(
+        self.rnn_1 = residual_lstm(
             input_size=self.udpipe_input_dim,
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
+            dropout_p=dropout_p,
+            residual=False
         )
 
+        # Dropout for residual lstms are handled inside class
+        # Avoids dropping out the residual connection
         self.rnn_2 = residual_lstm(
             input_size=self.udpipe_output_dim,
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
+            dropout_p=dropout_p
         )
 
         self.rnn_3 = residual_lstm(
             input_size=self.udpipe_output_dim,
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
+            dropout_p=dropout_p
         )
 
         # ======================================================================
@@ -103,6 +115,12 @@ class UDPipe2(pl.LightningModule):
             ]
         )
 
+        # ==========================================================================
+        # Regularization
+        # ==========================================================================
+        self.unk_token_idx = token_vocab[unk_token]
+        self.token_mask = D.bernoulli.Bernoulli(1-torch.tensor([token_mask_p]))
+
     def forward(
         self,
         char_lens: torch.Tensor,
@@ -127,10 +145,19 @@ class UDPipe2(pl.LightningModule):
         c2w_embs = pad_sequence(seqs, padding_value=0.0)
 
         # Get word embeddings
-        w_embeds = self.w_embeddings(tokens)
+        # Replace token with <UNK> with a certain probability
+        tokens_ = torch.where(
+            self.token_mask.sample(tokens.size()).squeeze().bool(),
+            tokens,
+            self.unk_token_idx
+            )
+
+        w_embeds = self.w_embeddings(tokens_)
 
         # Concatenate all embeddings together
         embeds = torch.cat([c2w_embs, w_embeds, pretrained_embeddings], dim=-1)
+
+        embeds = self.embed_dropout(embeds)
 
         # ======================================================================
         # Word-level recurrent layers
@@ -138,7 +165,10 @@ class UDPipe2(pl.LightningModule):
         # Pass the word embeddings through the LSTMs
         embeds = pack_padded_sequence(embeds, token_lens, enforce_sorted=False)
 
-        h_t, _ = self.rnn_1(embeds)
+        # Input to hidden, no residual connection
+        h_t = self.rnn_1(embeds)
+
+        # Hidden to hidden, residual connection
         h_t = self.rnn_2(h_t)
         h_t = self.rnn_3(h_t)
 
@@ -147,6 +177,8 @@ class UDPipe2(pl.LightningModule):
         # ======================================================================
         # No need for unpacking
         # Using packed 'vector' for token-level sequence classification
+        print(c2w_embs_.size(), h_t.data.size())
+
         lemma_script_logits = self.lemma_script_classifier(
             torch.cat([c2w_embs_, h_t.data], dim=-1)
         )
