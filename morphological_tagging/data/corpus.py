@@ -3,7 +3,7 @@ import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from collections import Counter, defaultdict
 
 import torch
@@ -18,11 +18,62 @@ import pandas as pd
 from morphological_tagging.data.lemma_script import LemmaScriptGenerator
 
 
+BASEPATH = "./morphological_tagging/data/sigmorphon_2019/task2"
+
+FASTTEXT_LANG_CONVERSION = {
+    "Arabic": "ar",
+    "Czech": "cs",
+    "Dutch": "nl",
+    "English": "eng",
+    "French": "fr",
+    "Turkish": "tr"
+}
+
+def get_conllu_files(language: str, name: str = 'merge') -> dict[list]:
+    """Get the UD/CONLLU/SIGMORPHON treebanks from the BASEPATH dir.
+
+    Args:
+        language (str): the desired language
+        name (str): the desired treebank name, or merge for all. Default to "merge"
+
+    Returns:
+        dict[list]: a dict, with as keys the data split and as values a list with filepaths
+    """
+
+    files = defaultdict(list)
+    for (dirpath, dirnames, filenames) in os.walk(BASEPATH):
+        if len(filenames) == 0:
+            continue
+
+        treebank = os.path.split(dirpath)[-1]
+        _, treebank = re.split(r"_", treebank, maxsplit=1)
+        t_lang, t_name = re.split(r"-", treebank, maxsplit=1)
+
+        if t_lang.lower() == language.lower() and (name.lower() == t_name.lower() or name.lower() == "merge"):
+            for f in filenames:
+                if 'covered' in f:
+                    continue
+
+                files[f.rsplit("-")[-1].rsplit(".")[0]].append((
+                    os.path.join(dirpath, f),
+                    t_name
+                    ))
+
+    files = dict(files)
+
+    return files
+
 class FastText(Vectors):
 
     url_base = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.{}.300.vec.gz"
 
     def __init__(self, language="en", **kwargs):
+
+        if len(language) > 2:
+            language = FASTTEXT_LANG_CONVERSION.get(language)
+            if language is None:
+                raise ValueError(f"Language acronym '{language}' not recognized.")
+
         url = self.url_base.format(language)
         name = os.path.basename(url)
         super(FastText, self).__init__(name, url=url, **kwargs)
@@ -142,6 +193,7 @@ class DocumentCorpus(Dataset):
     docs: List = field(default_factory=lambda: [])
     unk_token: str = "<UNK>"
     pad_token: str = "<PAD>"
+    treebanks: Dict = field(default_factory=lambda: defaultdict(int))
 
     def __len__(self):
         return len(self.docs)
@@ -227,12 +279,13 @@ class DocumentCorpus(Dataset):
 
             d.set_tensors(chars_tensor, tokens_tensor, morph_tags_tensor)
 
-    def parse_tree_file(self, fp: str):
+    def parse_tree_file(self, fp: str, treebank_name: str = None):
         """Parse a single document with CONLL-U trees into a list of Documents.
         Will append to documents, not overwrite.
 
         Args:
             fp (str): filepath to the document.
+            treebank_name (str): the name of the treebank which is being parsed
 
         """
         with open(fp, newline="\n", encoding="utf8") as csvfile:
@@ -246,6 +299,8 @@ class DocumentCorpus(Dataset):
 
                     self.docs.append(cur_doc)
                     cur_doc = Document()
+
+                    self.treebanks[treebank_name if treebank_name is not None else "Undefined"] += 1
 
                 # Get sentence ID
                 elif "# sent_id = " in row[0]:
@@ -261,13 +316,17 @@ class DocumentCorpus(Dataset):
 
                 # Get tree information
                 # CONLL-U format
-                elif len(row) > 1:
+                elif row[0].isnumeric():
                     if "." in row[0]:
                         continue
                     cur_doc.tree.add(row)
 
-            self.docs.append(cur_doc)
+            if cur_doc.sent_id is not None:
+                self.docs.append(cur_doc)
 
+                self.treebanks[treebank_name if treebank_name is not None else "Undefined"] += 1
+
+    def setup(self):
         self._get_vocabs()
         self._move_to_pt()
 
