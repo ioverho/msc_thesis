@@ -2,6 +2,7 @@ from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.nn.functional as F
 import torch.distributions as D
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
@@ -32,10 +33,13 @@ class UDPipe2(pl.LightningModule):
         pad_token: str = "<PAD>",
         w_embedding_dim: int = 512,
         pretrained_embedding_dim: int = 300,
-        udpipe_bidirectional: bool = True,
         udpipe_rnn_dim: int = 512,
-        dropout_p : float = 0.5,
-        token_mask_p: float = 0.2
+        udpipe_bidirectional: bool = True,
+        dropout_p: float = 0.5,
+        token_mask_p: float = 0.2,
+        label_smoothing: float = 0.03,
+        lr: float = 1e-3,
+        betas: Tuple[float] = (0.9, 0.99),
     ) -> None:
         super().__init__()
 
@@ -57,9 +61,7 @@ class UDPipe2(pl.LightningModule):
         # ======================================================================
         # Word-level recurrent layers
         # ======================================================================
-        self.udpipe_input_dim = (
-            c2w_out_dim + w_embedding_dim + pretrained_embedding_dim
-        )
+        self.udpipe_input_dim = c2w_out_dim + w_embedding_dim + pretrained_embedding_dim
         self.udpipe_output_dim = (2 if udpipe_bidirectional else 1) * udpipe_rnn_dim
 
         self.rnn_1 = residual_lstm(
@@ -67,7 +69,7 @@ class UDPipe2(pl.LightningModule):
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
             dropout_p=dropout_p,
-            residual=False
+            residual=False,
         )
 
         # Dropout for residual lstms are handled inside class
@@ -76,14 +78,14 @@ class UDPipe2(pl.LightningModule):
             input_size=self.udpipe_output_dim,
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
-            dropout_p=dropout_p
+            dropout_p=dropout_p,
         )
 
         self.rnn_3 = residual_lstm(
             input_size=self.udpipe_output_dim,
             hidden_size=udpipe_rnn_dim,
             bidirectional=udpipe_bidirectional,
-            dropout_p=dropout_p
+            dropout_p=dropout_p,
         )
 
         # ======================================================================
@@ -119,7 +121,15 @@ class UDPipe2(pl.LightningModule):
         # Regularization
         # ==========================================================================
         self.unk_token_idx = token_vocab[unk_token]
-        self.token_mask = D.bernoulli.Bernoulli(1-torch.tensor([token_mask_p]))
+        self.token_mask = D.bernoulli.Bernoulli(1 - torch.tensor([token_mask_p]))
+
+        self.label_smoothing = label_smoothing
+
+        # ======================================================================
+        # Hyperparameters
+        # ======================================================================
+        self.lr = lr
+        self.betas = betas
 
     def forward(
         self,
@@ -149,8 +159,8 @@ class UDPipe2(pl.LightningModule):
         tokens_ = torch.where(
             self.token_mask.sample(tokens.size()).squeeze().bool(),
             tokens,
-            self.unk_token_idx
-            )
+            self.unk_token_idx,
+        )
 
         w_embeds = self.w_embeddings(tokens_)
 
@@ -177,8 +187,6 @@ class UDPipe2(pl.LightningModule):
         # ======================================================================
         # No need for unpacking
         # Using packed 'vector' for token-level sequence classification
-        print(c2w_embs_.size(), h_t.data.size())
-
         lemma_script_logits = self.lemma_script_classifier(
             torch.cat([c2w_embs_, h_t.data], dim=-1)
         )
@@ -207,15 +215,78 @@ class UDPipe2(pl.LightningModule):
         morph_reg_logits: Union[torch.Tensor, None] = None,
     ) -> torch.Tensor:
 
-        loss = F.cross_entropy(lemma_script_logits, lemma_tags)
-        loss += F.binary_cross_entropy_with_logits(morph_logits, morph_tags.float())
+        loss = F.cross_entropy(lemma_script_logits, lemma_tags, label_smoothing=self.label_smoothing)
+        loss += F.binary_cross_entropy_with_logits(
+            morph_logits, self._label_smooth(morph_tags)
+        )
 
         if morph_reg_logits is not None:
             loss += sum(
                 F.binary_cross_entropy_with_logits(
-                    logits, morph_tags.float()[:, i].unsqueeze(-1)
+                    logits, self._label_smooth(morph_tags[:, i].unsqueeze(-1))
                 )
                 for i, logits in enumerate(morph_reg_logits)
             )
 
             return loss
+
+    def _label_smooth(self, labels: torch.LongTensor, K: int = 2):
+        """Label smoothing applied to a one-hot tensor.
+
+        Args:
+            labels (torch.LongTensor): binary tensor
+            K (int, optional): Number of classes. Defaults to 2.
+
+        """
+
+        labels_ = labels.float() * (1 - self.label_smoothing)
+        labels_ += self.label_smoothing / K
+
+        return labels_
+
+    def configure_optimizers(self):
+
+        optimizer = optim.Adam(self.parameters(), lr=self.lr, betas=self.betas)
+
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
+        (
+            char_lens,
+            chars,
+            token_lens,
+            tokens,
+            pretrained_embeddings,
+            morph_tags,
+            lemma_tags,
+        ) = batch
+
+        lemma_script_logits, morph_logits, morph_reg_logits = self.forward(
+            char_lens, chars, token_lens, tokens, pretrained_embeddings
+        )
+
+        loss = self.loss(
+            lemma_script_logits, morph_logits, lemma_tags, morph_tags, morph_reg_logits
+        )
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+
+        (
+            char_lens,
+            chars,
+            token_lens,
+            tokens,
+            pretrained_embeddings,
+            morph_tags,
+            lemma_tags,
+        ) = batch
+
+        lemma_script_logits, morph_logits = self.forward(
+            char_lens, chars, token_lens, tokens, pretrained_embeddings
+        )
+
+        loss = self.loss(lemma_script_logits, morph_logits, lemma_tags, morph_tags)
+
+        return loss
