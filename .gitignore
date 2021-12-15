@@ -123,3 +123,4 @@ klad*.*
 /msc_thesis
 *.tmp
 *.pt
+klad.py
