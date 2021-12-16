@@ -3,7 +3,7 @@ import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 from collections import Counter, defaultdict
 
 import torch
@@ -20,6 +20,7 @@ from morphological_tagging.data.lemma_script import LemmaScriptGenerator
 
 BASEPATH = "./morphological_tagging/data/sigmorphon_2019/task2"
 
+
 FASTTEXT_LANG_CONVERSION = {
     "Arabic": "ar",
     "Czech": "cs",
@@ -29,7 +30,8 @@ FASTTEXT_LANG_CONVERSION = {
     "Turkish": "tr"
 }
 
-def get_conllu_files(language: str, name: str = 'merge') -> dict[list]:
+
+def get_conllu_files(language: str, name: str = 'merge', splits: bool = True) -> Union[dict[list], list]:
     """Get the UD/CONLLU/SIGMORPHON treebanks from the BASEPATH dir.
 
     Args:
@@ -37,7 +39,8 @@ def get_conllu_files(language: str, name: str = 'merge') -> dict[list]:
         name (str): the desired treebank name, or merge for all. Default to "merge"
 
     Returns:
-        dict[list]: a dict, with as keys the data split and as values a list with filepaths
+        Union[dict[list], list]: a dict, with as keys the data split and as values a list with filepaths.
+            If `splits` is False, then return a list.
     """
 
     files = defaultdict(list)
@@ -54,16 +57,24 @@ def get_conllu_files(language: str, name: str = 'merge') -> dict[list]:
                 if 'covered' in f:
                     continue
 
-                files[f.rsplit("-")[-1].rsplit(".")[0]].append((
+                split = f.rsplit("-")[-1].rsplit(".")[0]
+                files[split].append((
                     os.path.join(dirpath, f),
-                    t_name
+                    t_name,
+                    split
                     ))
 
     files = dict(files)
 
+    if not splits:
+        files = [item for sublist in list(files.values()) for item in sublist]
+
     return files
 
+
 class FastText(Vectors):
+    """Slightly rewritten FastText vecot class to use multi-lingual embeddings.
+    """
 
     url_base = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.{}.300.vec.gz"
 
@@ -115,8 +126,9 @@ class Document:
     """A class for holding a single text document.
     """
 
-    sent_id: str = None
-    text: str = None
+    sent_id: Union[str, None] = None
+    split: Union[str, None] = None
+    text: Union[str, None] = None
     tree: List = field(default_factory=lambda: Tree())
 
     def __str__(self):
@@ -194,6 +206,7 @@ class DocumentCorpus(Dataset):
     unk_token: str = "<UNK>"
     pad_token: str = "<PAD>"
     treebanks: Dict = field(default_factory=lambda: defaultdict(int))
+    splits: Dict = field(default_factory=lambda: defaultdict(list))
 
     def __len__(self):
         return len(self.docs)
@@ -279,7 +292,7 @@ class DocumentCorpus(Dataset):
 
             d.set_tensors(chars_tensor, tokens_tensor, morph_tags_tensor)
 
-    def parse_tree_file(self, fp: str, treebank_name: str = None):
+    def parse_tree_file(self, fp: str, treebank_name: str = None, split: str = None):
         """Parse a single document with CONLL-U trees into a list of Documents.
         Will append to documents, not overwrite.
 
@@ -298,9 +311,11 @@ class DocumentCorpus(Dataset):
                 if len(row) == 0:
 
                     self.docs.append(cur_doc)
-                    cur_doc = Document()
-
                     self.treebanks[treebank_name if treebank_name is not None else "Undefined"] += 1
+
+                    cur_doc = Document()
+                    cur_doc.split = split
+                    self.splits[split if split is not None else "Undefined"].append(len(self.docs)-1)
 
                 # Get sentence ID
                 elif "# sent_id = " in row[0]:
@@ -327,8 +342,13 @@ class DocumentCorpus(Dataset):
                 self.treebanks[treebank_name if treebank_name is not None else "Undefined"] += 1
 
     def setup(self):
+        """Code to run when finished importing all files.
+        """
         self._get_vocabs()
         self._move_to_pt()
+
+        self.treebanks = dict(self.treebanks)
+        self.splits = dict(self.splits)
 
     def add_word_embs(
         self, vecs: Vectors = FastText, lower_case_backup: bool = False, **kwargs

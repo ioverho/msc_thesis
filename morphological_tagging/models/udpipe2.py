@@ -13,13 +13,12 @@ from morphological_tagging.models.modules import (
     residual_lstm,
     residual_mlp_layer,
 )
+from utils.common_operations import label_smooth
 
 
 class UDPipe2(pl.LightningModule):
     """[summary]
 
-    Args:
-        pl ([type]): [description]
     """
 
     def __init__(
@@ -215,34 +214,29 @@ class UDPipe2(pl.LightningModule):
         morph_reg_logits: Union[torch.Tensor, None] = None,
     ) -> torch.Tensor:
 
-        loss = F.cross_entropy(lemma_script_logits, lemma_tags, label_smoothing=self.label_smoothing)
-        loss += F.binary_cross_entropy_with_logits(
-            morph_logits, self._label_smooth(morph_tags)
+        lemma_loss = F.cross_entropy(
+            lemma_script_logits, lemma_tags, label_smoothing=self.label_smoothing
+        )
+        morph_loss = F.binary_cross_entropy_with_logits(
+            morph_logits, label_smooth(self.label_smoothing, morph_tags)
         )
 
+        loss = lemma_loss + morph_loss
+        losses = {"lemma": lemma_loss, "morph": morph_loss}
+
         if morph_reg_logits is not None:
-            loss += sum(
+            morph_reg_loss = sum(
                 F.binary_cross_entropy_with_logits(
-                    logits, self._label_smooth(morph_tags[:, i].unsqueeze(-1))
+                    logits,
+                    label_smooth(self.label_smoothing, morph_tags[:, i].unsqueeze(-1)),
                 )
                 for i, logits in enumerate(morph_reg_logits)
             )
 
-            return loss
+            loss += morph_reg_loss
+            losses["morph_reg"] = morph_reg_loss
 
-    def _label_smooth(self, labels: torch.LongTensor, K: int = 2):
-        """Label smoothing applied to a one-hot tensor.
-
-        Args:
-            labels (torch.LongTensor): binary tensor
-            K (int, optional): Number of classes. Defaults to 2.
-
-        """
-
-        labels_ = labels.float() * (1 - self.label_smoothing)
-        labels_ += self.label_smoothing / K
-
-        return labels_
+        return loss, losses
 
     def configure_optimizers(self):
 
