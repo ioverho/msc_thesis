@@ -125,3 +125,4 @@ klad*.*
 *.pt
 klad.py
 lightning_logs/
+vscode/
