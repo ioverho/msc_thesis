@@ -8,6 +8,7 @@ import torch.distributions as D
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import pytorch_lightning as pl
 
+from morphological_tagging.metrics import clf_metrics
 from morphological_tagging.models.modules import (
     char2word,
     residual_lstm,
@@ -17,7 +18,12 @@ from utils.common_operations import label_smooth
 
 
 class UDPipe2(pl.LightningModule):
-    """[summary]
+    """A PyTorch Lightning implementation of UDPipe2.0.
+
+    As described in:
+        Straka, M., Straková, J., & Hajič, J. (2019). UDPipe at SIGMORPHON 2019: \n
+        Contextualized embeddings, regularization with morphological categories, corpora merging. \n
+        arXiv preprint arXiv:1908.06931.
 
     """
 
@@ -41,6 +47,21 @@ class UDPipe2(pl.LightningModule):
         betas: Tuple[float] = (0.9, 0.99),
     ) -> None:
         super().__init__()
+
+        self.c2w_kwargs = c2w_kwargs
+        self.n_lemma_scripts = n_lemma_scripts
+        self.n_morph_tags = n_morph_tags
+        self.unk_token = unk_token
+        self.pad_token = pad_token
+        self.w_embedding_dim = w_embedding_dim
+        self.pretrained_embedding_dim = pretrained_embedding_dim
+        self.udpipe_rnn_dim = udpipe_rnn_dim
+        self.udpipe_bidirectional = udpipe_bidirectional
+        self.dropout_p = dropout_p
+        self.token_mask_p = token_mask_p
+        self.label_smoothing = label_smoothing
+        self.lr = lr
+        self.betas = betas
 
         # ======================================================================
         # Embeddings
@@ -122,13 +143,23 @@ class UDPipe2(pl.LightningModule):
         self.unk_token_idx = token_vocab[unk_token]
         self.token_mask = D.bernoulli.Bernoulli(1 - torch.tensor([token_mask_p]))
 
-        self.label_smoothing = label_smoothing
+        self.configure_metrics()
 
-        # ======================================================================
-        # Hyperparameters
-        # ======================================================================
-        self.lr = lr
-        self.betas = betas
+    def configure_metrics(self):
+
+        self.morph_metrics_train = clf_metrics(K=self.n_morph_tags, prefix="morph_train")
+        self.morph_metrics_valid = clf_metrics(K=self.n_morph_tags, prefix="morph_valid")
+        self.morph_metrics_test = clf_metrics(K=self.n_morph_tags, prefix="morph_test")
+
+        self.lemma_metrics_train = clf_metrics(K=self.n_lemma_scripts, prefix="lemma_train")
+        self.lemma_metrics_valid = clf_metrics(K=self.n_lemma_scripts, prefix="lemma_valid")
+        self.lemma_metrics_test = clf_metrics(K=self.n_lemma_scripts, prefix="lemma_test")
+
+    def configure_optimizers(self):
+
+        optimizer = optim.Adam(self.parameters(), lr=self.lr, betas=self.betas)
+
+        return optimizer
 
     def forward(
         self,
@@ -238,12 +269,6 @@ class UDPipe2(pl.LightningModule):
 
         return loss, losses
 
-    def configure_optimizers(self):
-
-        optimizer = optim.Adam(self.parameters(), lr=self.lr, betas=self.betas)
-
-        return optimizer
-
     def training_step(self, batch, batch_idx):
         (
             char_lens,
@@ -255,13 +280,17 @@ class UDPipe2(pl.LightningModule):
             lemma_tags,
         ) = batch
 
-        lemma_script_logits, morph_logits, morph_reg_logits = self.forward(
+        lemma_logits, morph_logits, morph_reg_logits = self.forward(
             char_lens, chars, token_lens, tokens, pretrained_embeddings
         )
 
-        loss = self.loss(
-            lemma_script_logits, morph_logits, lemma_tags, morph_tags, morph_reg_logits
+        loss, losses = self.loss(
+            lemma_logits, morph_logits, lemma_tags, morph_tags, morph_reg_logits
         )
+
+        self.log_dict(**{f"{k}_loss_train": v for k,v in losses.items()})
+        self.log_dict(**self.lemma_metrics_train(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(**self.morph_metrics_train(torch.softmax(morph_logits, dim=-1), morph_tags))
 
         return loss
 
@@ -277,10 +306,38 @@ class UDPipe2(pl.LightningModule):
             lemma_tags,
         ) = batch
 
-        lemma_script_logits, morph_logits = self.forward(
+        lemma_logits, morph_logits = self.forward(
             char_lens, chars, token_lens, tokens, pretrained_embeddings
         )
 
-        loss = self.loss(lemma_script_logits, morph_logits, lemma_tags, morph_tags)
+        loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
+
+        self.log_dict(**{f"{k}_loss_valid": v for k,v in losses.items()})
+        self.log_dict(**self.lemma_metrics_valid(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(**self.morph_metrics_valid(torch.softmax(morph_logits, dim=-1), morph_tags))
+
+        return loss
+
+    def test_step(self, batch, batch_idx):
+
+        (
+            char_lens,
+            chars,
+            token_lens,
+            tokens,
+            pretrained_embeddings,
+            morph_tags,
+            lemma_tags,
+        ) = batch
+
+        lemma_logits, morph_logits = self.forward(
+            char_lens, chars, token_lens, tokens, pretrained_embeddings
+        )
+
+        loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
+
+        self.log_dict(**{f"{k}_loss_test": v for k,v in losses.items()})
+        self.log_dict(**self.lemma_metrics_test(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(**self.morph_metrics_test(torch.softmax(morph_logits, dim=-1), morph_tags))
 
         return loss
