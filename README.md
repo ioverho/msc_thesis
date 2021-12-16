@@ -8,13 +8,14 @@
 [//]: # (Badges)
 <p align="center">
 <a href="https://www.notion.so/MSc-AI-Thesis-9c3ba8027f6b4e3a82f0e391a6db76a9">
-    <img src="https://img.shields.io/badge/Notion-%23000000.svg?style=for-the-badge&logo=notion&logoColor=white"
+    <img
+    src="https://img.shields.io/badge/Notion-%23000000.svg?style=for-the-badge&logo=notion&logoColor=white"
     alt="This project's Notion page."
     style="float: center;"
     />
 </a>
 <a href="https://wandb.ai/verhivo">
-    <img src="https://img.shields.io/badge/weights%20&%20biases-%23FFBE00.svg?&style=for-the-badge&logo=weights%20&%20biases&logoColor=black"
+    <img src="https://img.shields.io/badge/WandB-%23000000.svg?&style=for-the-badge&logo=weightsandbiases&logoColor=#FFBE00"
     alt="This project's WandB page."
     style="float: center;"
     />
