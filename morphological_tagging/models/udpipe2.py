@@ -66,7 +66,10 @@ class UDPipe2(pl.LightningModule):
         # ======================================================================
         # Embeddings
         # ======================================================================
-        self.c2w_embeddings = char2word(vocab_len=len(char_vocab), **c2w_kwargs)
+        self.c2w_embeddings = char2word(
+            vocab_len=len(char_vocab),
+            padding_idx= char_vocab[pad_token],
+            **c2w_kwargs)
 
         c2w_out_dim = c2w_kwargs["out_dim"]
 
@@ -163,12 +166,18 @@ class UDPipe2(pl.LightningModule):
 
     def forward(
         self,
-        char_lens: torch.Tensor,
+        char_lens: Union[list, torch.Tensor],
         chars: torch.Tensor,
-        token_lens: torch.Tensor,
+        token_lens: Union[list, torch.Tensor],
         tokens: torch.Tensor,
         pretrained_embeddings: torch.Tensor,
     ) -> Tuple[torch.Tensor]:
+
+        if isinstance(char_lens, list):
+            char_lens = torch.tensor(char_lens, dtype=torch.long, device='cpu')
+
+        if isinstance(token_lens, list):
+            token_lens = torch.tensor(token_lens, dtype=torch.long, device='cpu')
 
         # ======================================================================
         # Embeddings
@@ -187,7 +196,7 @@ class UDPipe2(pl.LightningModule):
         # Get word embeddings
         # Replace token with <UNK> with a certain probability
         tokens_ = torch.where(
-            self.token_mask.sample(tokens.size()).squeeze().bool(),
+            self.token_mask.sample(tokens.size()).squeeze().bool().to(self.device),
             tokens,
             self.unk_token_idx,
         )
@@ -278,7 +287,7 @@ class UDPipe2(pl.LightningModule):
             pretrained_embeddings,
             morph_tags,
             lemma_tags,
-        ) = batch
+        ) = batch[0]
 
         lemma_logits, morph_logits, morph_reg_logits = self.forward(
             char_lens, chars, token_lens, tokens, pretrained_embeddings
@@ -288,9 +297,9 @@ class UDPipe2(pl.LightningModule):
             lemma_logits, morph_logits, lemma_tags, morph_tags, morph_reg_logits
         )
 
-        self.log_dict(**{f"{k}_loss_train": v for k,v in losses.items()})
-        self.log_dict(**self.lemma_metrics_train(torch.softmax(lemma_logits, dim=-1), lemma_tags))
-        self.log_dict(**self.morph_metrics_train(torch.softmax(morph_logits, dim=-1), morph_tags))
+        self.log_dict({f"{k}_loss_train": v for k,v in losses.items()})
+        self.log_dict(self.lemma_metrics_train(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(self.morph_metrics_train(torch.softmax(morph_logits, dim=-1), morph_tags))
 
         return loss
 
@@ -312,9 +321,9 @@ class UDPipe2(pl.LightningModule):
 
         loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
 
-        self.log_dict(**{f"{k}_loss_valid": v for k,v in losses.items()})
-        self.log_dict(**self.lemma_metrics_valid(torch.softmax(lemma_logits, dim=-1), lemma_tags))
-        self.log_dict(**self.morph_metrics_valid(torch.softmax(morph_logits, dim=-1), morph_tags))
+        self.log_dict({f"{k}_loss_valid": v for k,v in losses.items()})
+        self.log_dict(self.lemma_metrics_valid(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(self.morph_metrics_valid(torch.softmax(morph_logits, dim=-1), morph_tags))
 
         return loss
 
@@ -336,8 +345,8 @@ class UDPipe2(pl.LightningModule):
 
         loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
 
-        self.log_dict(**{f"{k}_loss_test": v for k,v in losses.items()})
-        self.log_dict(**self.lemma_metrics_test(torch.softmax(lemma_logits, dim=-1), lemma_tags))
-        self.log_dict(**self.morph_metrics_test(torch.softmax(morph_logits, dim=-1), morph_tags))
+        self.log_dict({f"{k}_loss_test": v for k,v in losses.items()})
+        self.log_dict(self.lemma_metrics_test(torch.softmax(lemma_logits, dim=-1), lemma_tags))
+        self.log_dict(self.morph_metrics_test(torch.softmax(morph_logits, dim=-1), morph_tags))
 
         return loss

@@ -119,7 +119,8 @@ klad*.*
 */data/*/
 /misc
 .*cache
-/checkpoints
+/checkpoints/
+*/checkpoints/
 /msc_thesis
 *.tmp
 *.pt

@@ -35,7 +35,7 @@ def find_version(experiment_version: str, checkpoint_dir: str, debug: bool = Fal
 
     full_version = experiment_version + "/version_" + str(version)
 
-    return full_version, experiment_version, "version_" + str(version)
+    return full_version, experiment_version, str(version)
 
 
 def set_seed(seed):

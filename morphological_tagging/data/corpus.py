@@ -25,7 +25,7 @@ FASTTEXT_LANG_CONVERSION = {
     "Arabic": "ar",
     "Czech": "cs",
     "Dutch": "nl",
-    "English": "eng",
+    "English": "en",
     "French": "fr",
     "Turkish": "tr"
 }
@@ -503,9 +503,7 @@ class DocumentCorpus(Dataset):
         )
 
         # Characters [T_c, B]
-        char_lens = torch.tensor(
-            [c.size(0) for seq in chars for c in seq], dtype=torch.long
-        )
+        char_lens = [c.size(0) for seq in chars for c in seq]
 
         chars = pad_sequence(
             [c for seq in chars for c in seq],
@@ -513,7 +511,7 @@ class DocumentCorpus(Dataset):
         )
 
         # Tokens [T_t, B]
-        token_lens = torch.tensor([seq.size(0) for seq in tokens], dtype=torch.long)
+        token_lens = [seq.size(0) for seq in tokens]
 
         tokens = pad_sequence(tokens, padding_value=0)
 
