@@ -29,6 +29,9 @@ CHECKPOINT_DIR = "./morphological_tagging/checkpoints"
 
 
 def train(args):
+    """Train loop.
+
+    """
 
     timer = Timer()
 
@@ -48,14 +51,17 @@ def train(args):
     # *==========================================================================
     print("\nEXPERIMENT SET-UP")
 
+    full_name = f"{config['run']['experiment_name']}_{config['data']['language']}_{config['data']['name']}"
+
     # == Version
     # ==== ./checkpoints/data_version/version_number
     full_version, experiment_dir, version = find_version(
-        config["run"]["experiment_name"], CHECKPOINT_DIR, #debug=config["run"]["debug"]
+        full_name,
+        CHECKPOINT_DIR,  debug=config["run"]["debug"]
     )
 
     os.makedirs(f"{CHECKPOINT_DIR}/{full_version}", exist_ok=True)
-    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}/logs", exist_ok=True)
+    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}/checkpoints", exist_ok=True)
 
     copyfile(
         args.config_file_path,
@@ -63,7 +69,6 @@ def train(args):
     )
 
     print(f"Saving to {CHECKPOINT_DIR}/{full_version}")
-    print(f"Logging to {CHECKPOINT_DIR}/{full_version}/logs")
 
     # == Device
     use_cuda = config["run"]["gpu"] or config["run"]["gpu"] > 1
@@ -88,14 +93,14 @@ def train(args):
         logger = TensorBoardLogger(
             save_dir=CHECKPOINT_DIR,
             name=experiment_dir,
-            version=version_dir,
+            version=version,
             **config["logging"]["logger_kwargs"],
         )
 
     elif config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
         logger = WandbLogger(
             project="morphological_tagging",
-            save_dir=f"{CHECKPOINT_DIR}/{full_version}/logs",
+            save_dir=f"{CHECKPOINT_DIR}/{full_version}",
             name=f"{experiment_dir}_v{version}",
             version=version,
             **config["logging"]["logger_kwargs"],
@@ -117,16 +122,15 @@ def train(args):
     )
     callbacks += [checkpoint_callback]
 
-    if config["misc_hparams"]["use_scheduler"]:
+    if config["model"].get("scheduler_name", False):
         lr_monitor = LearningRateMonitor(logging_interval="step")
         callbacks += [lr_monitor]
 
     device_monitor = DeviceStatsMonitor()
     callbacks += [device_monitor]
 
-    if config["run"]["prog_bar_refresh_rate"] >= 1:
-        prog_bar = TQDMProgressBar()
-        callbacks += [prog_bar]
+    prog_bar = TQDMProgressBar(refresh_rate=config['run']['prog_bar_refresh_rate'])
+    callbacks += [prog_bar]
 
     # *==========================================================================
     # * Dataset
@@ -155,7 +159,7 @@ def train(args):
     train_corpus = Subset(corpus, corpus.splits["train"])
     train_loader = DataLoader(
         train_corpus,
-        batch_size=config['misc_hparams']['batch_size'],
+        batch_size=config["misc_hparams"]["batch_size"],
         shuffle=True,
         collate_fn=corpus.collate_batch,
     )
@@ -163,7 +167,7 @@ def train(args):
     valid_corpus = Subset(corpus, corpus.splits["dev"])
     valid_loader = DataLoader(
         valid_corpus,
-        batch_size=config['misc_hparams']['batch_size'],
+        batch_size=config["misc_hparams"]["batch_size"],
         shuffle=False,
         collate_fn=corpus.collate_batch,
     )
@@ -171,7 +175,7 @@ def train(args):
     test_corpus = Subset(corpus, corpus.splits["test"])
     test_loader = DataLoader(
         test_corpus,
-        batch_size=config['misc_hparams']['batch_size'],
+        batch_size=config["misc_hparams"]["batch_size"],
         shuffle=False,
         collate_fn=corpus.collate_batch,
     )
@@ -191,9 +195,6 @@ def train(args):
         **config["model"],
     )
 
-    if isinstance(logger, WandbLogger):
-        logger.watch(model, log_freq=1000)
-
     # *==========================================================================
     # * Train
     # *==========================================================================
@@ -202,7 +203,9 @@ def train(args):
         callbacks=callbacks,
         gpus=1 if use_cuda else 0,
         deterministic=config["run"]["deterministic"],
-        fast_dev_run=int(config["run"]["fdev_run"]) if config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"] else False,
+        fast_dev_run=(int(config["run"]["fdev_run"])
+                      if config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"]
+                      else False),
         weights_summary="top",
         **config["trainer"],
     )
@@ -217,23 +220,23 @@ def train(args):
     # *##########
     # * TESTING #
     # *##########
-    if not config["run"]["fdev_run"]:
+    if not (config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"]):
+        print("\nTESTING")
+        print(f"LOADING FROM {trainer.checkpoint_callback.best_model_path}")
         model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
         model.freeze()
         model.eval()
 
-        train_result = trainer.test(model, test_dataloaders=train_loader, verbose=True)
-        valid_result = trainer.test(model, test_dataloaders=valid_loader, verbose=True)
-        test_result = trainer.test(model, test_dataloaders=test_loader, verbose=True)
+        test_result = trainer.test(model, dataloaders=test_loader, verbose=True)
 
         timer.end()
 
-        return train_result, valid_result, test_result
+        return test_result
 
-    timer.end()
+    else:
+        timer.end()
 
-    return 0
-
+        return 1
 
 if __name__ == "__main__":
 

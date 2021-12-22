@@ -1,6 +1,6 @@
 data:
   language: English
-  name: PUD
+  name: merge
   splits: False
   FastText: True
 
@@ -20,21 +20,24 @@ model:
   betas:
     - 0.9
     - 0.99
+  scheduler_name: Step
+  scheduler_kwargs:
+    milestones:
+      - 40
+    gamma: 0.1
 
 trainer:
-  gradient_clip_val: 10
-  max_epochs: 1
-
+  gradient_clip_val: 5
+  max_epochs: 60
 
 misc_hparams:
-  use_scheduler: False
-  batch_size: 4
+  batch_size: 32
 
 logging:
   logger: wandb
   logger_kwargs:
     log_model: True
-  monitor: lemma_valid_acc
+  monitor: total_loss_valid
   monitor_mode: 'max'
 
 run:
@@ -42,6 +45,6 @@ run:
   seed: 610
   gpu: 1
   deterministic: False
-  debug: True
-  fdev_run: 10
-  prog_bar_refresh_rate: 1
+  debug: False
+  fdev_run: False
+  prog_bar_refresh_rate: 200
