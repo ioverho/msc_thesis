@@ -3,8 +3,78 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 
+from utils.errors import ConfigurationError
 
-class char2word(nn.Module):
+class ResidualRNN(nn.Module):
+    """An RNN with residual connections.
+
+    Strongly inspired by UDIFY's implementation:
+        https://github.com/Hyperparticle/udify/blob/master/udify/modules/residual_rnn.py
+
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        h_dim: int,
+        num_layers: int = 1,
+        dropout: float = 0.0,
+        residual: bool = True,
+        rnn_type: str = "lstm",
+        bidirectional: bool = True,
+        batch_first: bool = True,
+    ) -> None:
+        super(ResidualRNN, self).__init__()
+
+        self.input_size = input_size
+        self.h_dim = h_dim
+        self.num_layers = num_layers
+        self.residual = residual
+        self.rnn_type = rnn_type
+        self.bidirectional = bidirectional
+        self.batch_first = batch_first
+
+        self.dropout = nn.Dropout(p=dropout)
+
+        rnn_type = rnn_type.lower()
+        if rnn_type == "lstm":
+            rnn_cell = nn.LSTM
+        elif rnn_type == "gru":
+            rnn_cell = nn.GRU
+        else:
+            raise ConfigurationError(f"Unknown RNN cell type {rnn_type}")
+
+        layers = []
+        for layer_index in range(num_layers):
+            # Use hidden size on later layers so that the first layer projects and all other layers are residual
+            input_ = input_size if layer_index == 0 else h_dim
+            rnn = rnn_cell(
+                input_,
+                h_dim,
+                bidirectional=self.bidirectional,
+                batch_first=self.batch_first,
+            )
+            layers.append(rnn)
+        self.layers = nn.ModuleList(layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        for i, layer in enumerate(self.layers):
+            h, _ = layer(x)
+            if self.residual:
+                # Sum the backward and forward states to allow residual connections
+                h = h[:, :, : self.h_dim] + h[:, :, self.h_dim :]
+
+            if self.residual and not (i == 0 and self.input_size != self.h_dim):
+                x = x + self.dropout(h)
+            else:
+                # Skip residual connection on first layer (input size is different from hidden size)
+                x = self.dropout(h)
+
+        return x
+
+
+class Char2Word(nn.Module):
     """Character to word embeddings.
 
     """
@@ -17,29 +87,49 @@ class char2word(nn.Module):
         bidirectional: bool = True,
         out_dim: int = 256,
         padding_idx: int = 1,
+        dropout: float = 0.0,
+        rnn_type: str = "lstm",
+        **rnn_kwargs,
     ) -> None:
         super().__init__()
 
-        self.bidirectional = bidirectional
+        self.vocab_len = vocab_len
+        self.embedding_dim = embedding_dim
         self.h_dim = h_dim
+        self.bidirectional = bidirectional
+        self.out_dim = out_dim
         self.padding_idx = padding_idx
+        self.dropout = dropout
+        self.rnn_type = rnn_type.lower()
+        self.rnn_kwargs = rnn_kwargs
+
+        if self.rnn_type == "lstm":
+            rnn_cell = nn.LSTM
+        elif self.rnn_type == "gru":
+            rnn_cell = nn.GRU
 
         self.embed = nn.Embedding(
-            num_embeddings=vocab_len,
-            embedding_dim=embedding_dim,
+            num_embeddings=self.vocab_len,
+            embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
         )
 
-        self.rnn = nn.GRU(
-            input_size=embedding_dim,
-            hidden_size=h_dim,
-            num_layers=1,
-            bidirectional=bidirectional,
+        self.embed_dropout = nn.Dropout(p=self.dropout)
+
+        self.rnn = rnn_cell(
+            input_size=self.embedding_dim,
+            hidden_size=self.h_dim,
+            bidirectional=self.bidirectional,
+            **self.rnn_kwargs,
         )
 
-        self.out_project = nn.Linear(
-            in_features=(2 if bidirectional else 1) * h_dim, out_features=out_dim
-        )
+        self.rnn_dropout = nn.Dropout(p=self.dropout)
+
+        if self.out_dim > 0:
+            self.out_project = nn.Linear(
+                in_features=(2 if self.bidirectional else 1) * self.h_dim,
+                out_features=self.out_dim,
+            )
 
     def forward(self, chars: torch.Tensor, char_lens: torch.Tensor):
 
@@ -49,62 +139,83 @@ class char2word(nn.Module):
             c_embeds, char_lens, enforce_sorted=False
         )
 
-        _, h_T_out = self.rnn(packed_c_embeds)
+        if self.rnn_type == "lstm":
+            _, (h_T_out, _) = self.rnn(packed_c_embeds)
+        elif self.rnn_type == "gru":
+            _, h_T_out = self.rnn(packed_c_embeds)
 
-        h_T_out = h_T_out.reshape(-1, (2 if self.bidirectional else 1) * self.h_dim)
+        h_T_out = h_T_out.view(-1, (2 if self.bidirectional else 1) * self.h_dim)
 
-        c2w_embeds = self.out_project(h_T_out)
+        if self.out_dim > 0:
+            c2w_embeds = self.out_project(h_T_out)
 
-        return c2w_embeds
+            return c2w_embeds
+
+        else:
+            return h_T_out
 
 
-class residual_lstm(nn.Module):
-    """LSTM with (optional) residual connection.
+class LayerAttention(nn.Module):
+    """A layer attention module.
 
-    Also handles dropout internally, and can handle both packed/padded sequences.
-
+    Args:
+        L (int): number of layers to attend over
+        u (float, optional): range for initiliazation. Defaults to 3.
+        dropout (float, optional): probability of dropout. Defaults to 0.0.
     """
-    def __init__(self, residual: bool = True, dropout_p: float = 0.0, **lstm_kwargs) -> None:
+
+    def __init__(self, L: int, u: float = 2, dropout: float = 0.0) -> None:
         super().__init__()
 
-        self.residual = residual
+        self.L = L
+        self.u = u
+        self.dropout = dropout
 
-        self.lstm = nn.LSTM(**lstm_kwargs)
+        self.h_w = nn.Parameter(torch.empty(self.L), requires_grad=True)
+        self.c = nn.Parameter(torch.ones(1), requires_grad=True)
+        init.uniform_(self.h_w, a=-self.u, b=self.u)
 
-        self.dropout = nn.Dropout(p=dropout_p)
+        if self.dropout > 0.0:
+            self._maskProbs = self.dropout * torch.ones(L)
+            self._maskVals = torch.full((L,), -float(torch.inf))
 
-    def forward(self, x):
+    def forward(self, h: torch.Tensor):
+        """Attends on L layers of h.
 
-        ht_out, _ = self.lstm(x)
+        Args:
+            h (torch.Tensor): takes a torch tensor representing the hidden layers
+                of a transformer. Assumed shape of [_,_,L,_].
+        """
 
-        if isinstance(x, torch.nn.utils.rnn.PackedSequence):
-            ht_out, lens = pad_packed_sequence(ht_out)
-            ht_out = self.dropout(ht_out)
-            if self.residual:
-                x_, _ = pad_packed_sequence(x)
-                ht_out = pack_padded_sequence(x_ + ht_out, lens, enforce_sorted=False)
-            else:
-                ht_out = pack_padded_sequence(ht_out, lens, enforce_sorted=False)
+        if self.dropout > 0.0:
+            # Layer dropout
+            alpha = torch.softmax(
+                torch.where(
+                    torch.bernoulli(self._maskProbs).bool(), self._maskVals, self.h_w
+                ),
+                dim=0,
+            )
         else:
-            ht_out = self.dropout(ht_out)
-            if self.residual:
-                ht_out = x + ht_out
+            alpha = torch.softmax(self.h_w, dim=0)
 
-        return ht_out
+        h_out = self.c * torch.sum((alpha.view(1, 1, -1, 1) * h), dim=2)
+
+        return h_out
 
 
-class residual_mlp_layer(nn.Module):
+class ResidualMLP(nn.Module):
     """MLP layer with residual connection.
 
     """
-    def __init__(self, **linear_kwargs) -> None:
+    def __init__(self, act_fn: nn.Module = nn.ReLU(), **linear_kwargs) -> None:
         super().__init__()
 
         self.linear = nn.Linear(**linear_kwargs)
+        self.act_fn = act_fn
 
     def forward(self, x):
 
-        h = torch.tanh(self.linear(x))
+        h = self.act_fn(self.linear(x))
         h = h + x
 
         return h

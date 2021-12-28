@@ -57,7 +57,8 @@ def train(args):
     # ==== ./checkpoints/data_version/version_number
     full_version, experiment_dir, version = find_version(
         full_name,
-        CHECKPOINT_DIR,  debug=config["run"]["debug"]
+        CHECKPOINT_DIR,
+        debug=config["run"]["debug"]
     )
 
     os.makedirs(f"{CHECKPOINT_DIR}/{full_version}", exist_ok=True)
@@ -91,10 +92,8 @@ def train(args):
     print("\nLOGGING")
     if config["logging"]["logger"].lower() == "tensorboard":
         logger = TensorBoardLogger(
-            save_dir=CHECKPOINT_DIR,
-            name=experiment_dir,
-            version=version,
-            **config["logging"]["logger_kwargs"],
+            save_dir=f"{CHECKPOINT_DIR}/{full_version}",
+            #**config["logging"]["logger_kwargs"],
         )
 
     elif config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
@@ -191,7 +190,8 @@ def train(args):
         pad_token=corpus.pad_token,
         pretrained_embedding_dim=corpus.pretrained_embeddings_dim,
         n_lemma_scripts=len(corpus.script_counter),
-        n_morph_tags=len(corpus.morph_tag_vocab) - 1,
+        n_morph_tags=len(corpus.morph_tag_vocab),
+        n_morph_cats=len(corpus.morph_cat_vocab),
         **config["model"],
     )
 
@@ -221,6 +221,9 @@ def train(args):
     # * TESTING #
     # *##########
     if not (config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"]):
+        # If in fastdev mode, won't save a model
+        # Would otherwise throw a 'PermissionError: [Errno 13] Permission denied: ...'
+
         print("\nTESTING")
         print(f"LOADING FROM {trainer.checkpoint_callback.best_model_path}")
         model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)

@@ -10,12 +10,17 @@ model:
     h_dim: 256
     out_dim: 256
     bidirectional: True
+    rnn_type: gru
   w_embedding_dim: 512
-  udpipe_rnn_dim: 512
-  udpipe_bidirectional: True
-  dropout_p: 0.5
+  word_rnn_kwargs:
+    h_dim: 512
+    bidirectional: True
+    rnn_type: lstm
+    num_layers: 3
+    residual: True
   token_mask_p: 0.2
   label_smoothing: 0.03
+  reg_loss_weight: 2
   lr: 1.0e-3
   betas:
     - 0.9
@@ -34,9 +39,9 @@ misc_hparams:
   batch_size: 32
 
 logging:
-  logger: wandb
-  logger_kwargs:
-    log_model: True
+  logger: tensorboard
+  #logger_kwargs:
+  #  log_model: True
   monitor: total_loss_valid
   monitor_mode: 'max'
 
@@ -47,4 +52,4 @@ run:
   deterministic: False
   debug: False
   fdev_run: False
-  prog_bar_refresh_rate: 200
+  prog_bar_refresh_rate: 5

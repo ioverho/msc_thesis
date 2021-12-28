@@ -1,6 +1,7 @@
 import os
 import csv
 import re
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Union
@@ -20,6 +21,7 @@ from morphological_tagging.data.lemma_script import LemmaScriptGenerator
 
 BASEPATH = "./morphological_tagging/data/sigmorphon_2019/task2"
 
+ALL_TAGS_FP = "./morphological_tagging/data/uni_morph_tags.json"
 
 FASTTEXT_LANG_CONVERSION = {
     "Arabic": "ar",
@@ -152,13 +154,19 @@ class Document:
     def morph_tags(self):
         return self.tree.morph_tags
 
-    def set_tensors(self, chars_tensor, tokens_tensor, morph_tags_tensor):
+    def set_tensors(self, chars_tensor, tokens_tensor, morph_tags_tensor, morph_cats_tensor):
 
         self.chars_tensor = chars_tensor
 
         self.tokens_tensor = tokens_tensor
 
         self.morph_tags_tensor = morph_tags_tensor
+
+        self.morph_cats_tensor = morph_cats_tensor
+
+    def set_morph_cats(self, cats_list: List):
+
+        self.morph_cats = cats_list
 
     def set_lemma_tags(self, tags_tensor: torch.LongTensor):
 
@@ -189,7 +197,8 @@ class Document:
             pretrained_embeds.append(self.context_emb)
 
         if len(pretrained_embeds) == 0:
-            raise ValueError("Document has no pretrained embeddings.")
+            #raise ValueError("Document has no pretrained embeddings.")
+            return 0
         else:
             pretrained_embeds = torch.cat(pretrained_embeds, dim=-1)
             # TODO (ivo): add device support
@@ -207,6 +216,7 @@ class DocumentCorpus(Dataset):
     pad_token: str = "<PAD>"
     treebanks: Dict = field(default_factory=lambda: defaultdict(int))
     splits: Dict = field(default_factory=lambda: defaultdict(list))
+    batch_first: bool = False
 
     def __len__(self):
         return len(self.docs)
@@ -254,6 +264,21 @@ class DocumentCorpus(Dataset):
             )
         }
 
+        # ======================================================================
+        # Morphological feature categories (for regularization)
+        # ======================================================================
+        with open("./morphological_tagging/data/uni_morph_tags.json", "rb") as f:
+            uni_morph_tags = json.load(f)
+
+        valid_mtags = set(map(lambda x: x.lower(), self.morph_tag_vocab.keys())) & uni_morph_tags.keys()
+
+        self.morph_tag_name_vocab ={mtag: uni_morph_tags[mtag][0] for mtag in list(valid_mtags)}
+        self.morph_tag_cat_vocab ={mtag: uni_morph_tags[mtag][1] for mtag in list(valid_mtags)}
+        self.morph_tag_cat_vocab["_"] = "_"
+
+        self.morph_cat_vocab = {k: v for v, k in enumerate(sorted(set(self.morph_tag_cat_vocab.values())))}
+        self.morph_cat_vocab["_"] = len(self.morph_cat_vocab) - 1
+
     def _move_to_pt(self):
 
         for d in self.docs:
@@ -261,7 +286,6 @@ class DocumentCorpus(Dataset):
                 torch.tensor(
                     self.char_vocab.lookup_indices([c for c in t]),
                     dtype=torch.long
-                    # TODO (ivo): add device support
                 )
                 for t in d.tokens
             ]
@@ -269,7 +293,6 @@ class DocumentCorpus(Dataset):
             tokens_tensor = torch.tensor(
                 self.token_vocab.lookup_indices([t for t in d.tokens]),
                 dtype=torch.long
-                # TODO (ivo): add device support
             )
 
             morph_tags_tensor = torch.stack(
@@ -279,7 +302,6 @@ class DocumentCorpus(Dataset):
                             torch.tensor(
                                 [self.morph_tag_vocab.get(tag, "_") for tag in tagset],
                                 dtype=torch.long
-                                # TODO (ivo): add device support
                             ),
                             len(self.morph_tag_vocab),
                         )[:, :-1],
@@ -290,7 +312,24 @@ class DocumentCorpus(Dataset):
                 dim=0,
             )
 
-            d.set_tensors(chars_tensor, tokens_tensor, morph_tags_tensor)
+            morph_cats_tensor = torch.stack(
+                [
+                    torch.sum(
+                        F.one_hot(
+                            torch.tensor(
+                                list({self.morph_cat_vocab[self.morph_tag_cat_vocab[tag.lower()]] for tag in tagset}),
+                                dtype=torch.long
+                            ),
+                            len(self.morph_cat_vocab),
+                        ),
+                        dim=0,
+                    )
+                    for tagset in d.morph_tags
+                ],
+                dim=0,
+            )
+
+            d.set_tensors(chars_tensor, tokens_tensor, morph_tags_tensor, morph_cats_tensor)
 
     def parse_tree_file(self, fp: str, treebank_name: str = None, split: str = None):
         """Parse a single document with CONLL-U trees into a list of Documents.
@@ -344,9 +383,22 @@ class DocumentCorpus(Dataset):
     def setup(self):
         """Code to run when finished importing all files.
         """
+        # Iterate over the documents to get the necessary vocabs
         self._get_vocabs()
+
+        # Iterate over documents again to add the morph. cats. to each doc
+        for d in self.docs:
+            morph_cats = [
+                {self.morph_tag_cat_vocab[tag.lower()] for tag in tagset}
+                for tagset in d.morph_tags
+                ]
+
+            d.set_morph_cats(morph_cats)
+
+        # Move documents information to tensors for minibatching
         self._move_to_pt()
 
+        # Collect information about documents
         self.treebanks = dict(self.treebanks)
         self.splits = dict(self.splits)
 
@@ -494,11 +546,12 @@ class DocumentCorpus(Dataset):
                 d.pretrained_embeddings,
                 d.morph_tags_tensor,
                 d.lemma_tags_tensor,
+                d.morph_cats_tensor,
             ]
             for d in batch
         ]
 
-        chars, tokens, pretrained_embeddings, morph_tags, lemma_tags = list(
+        chars, tokens, pretrained_embeddings, morph_tags, lemma_tags, morph_cats = list(
             map(list, zip(*docs_subset))
         )
 
@@ -518,11 +571,13 @@ class DocumentCorpus(Dataset):
         pretrained_embeddings = pad_sequence(pretrained_embeddings, padding_value=0)
 
         # Tags [T_t x B, C]/[T_t x B]
-        morph_tags = torch.cat(morph_tags)
+        lemma_tags = pad_sequence(lemma_tags, batch_first=self.batch_first, padding_value=-1)
 
-        lemma_tags = torch.cat(lemma_tags)
+        morph_tags = pad_sequence(morph_tags, batch_first=self.batch_first, padding_value=-1)
 
-        return char_lens, chars, token_lens, tokens, pretrained_embeddings, morph_tags, lemma_tags
+        morph_cats = pad_sequence(morph_cats, batch_first=self.batch_first, padding_value=-1)
+
+        return char_lens, chars, token_lens, tokens, pretrained_embeddings, lemma_tags, morph_tags, morph_cats
 
     @property
     def pretrained_embeddings_dim(self):
