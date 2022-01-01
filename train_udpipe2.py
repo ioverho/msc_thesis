@@ -24,6 +24,7 @@ from morphological_tagging.data.corpus import get_conllu_files, DocumentCorpus, 
 from morphological_tagging.models.udpipe2 import UDPipe2
 
 from utils.experiment import find_version, set_seed, set_deterministic, Timer
+from utils.errors import ConfigurationError
 
 CHECKPOINT_DIR = "./morphological_tagging/checkpoints"
 
@@ -49,7 +50,7 @@ def train(args):
     # *==========================================================================
     # *Experiment
     # *==========================================================================
-    print("\nEXPERIMENT SET-UP")
+    print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
     full_name = f"{config['run']['experiment_name']}_{config['data']['language']}_{config['data']['name']}"
 
@@ -89,10 +90,13 @@ def train(args):
     # * Logging & Callbacks
     # *==========================================================================
     # == Logging
-    print("\nLOGGING")
+    print(f"\n{timer.time()} | LOGGER SETUP")
     if config["logging"]["logger"].lower() == "tensorboard":
+        # os.path.join(save_dir, name, version)
         logger = TensorBoardLogger(
-            save_dir=f"{CHECKPOINT_DIR}/{full_version}",
+            save_dir=f"{CHECKPOINT_DIR}",
+            name=f"{experiment_dir}",
+            version=f"version_{version}",
             #**config["logging"]["logger_kwargs"],
         )
 
@@ -107,7 +111,7 @@ def train(args):
         logger.experiment.config.update(config, allow_val_change=True)
 
     else:
-        raise ValueError("Logger not recognized.")
+        raise ConfigurationError("Logger not recognized.")
 
     # == Callbacks
     callbacks = []
@@ -134,14 +138,18 @@ def train(args):
     # *==========================================================================
     # * Dataset
     # *==========================================================================
-    print("\nDATA")
+    print(f"\n{timer.time()} | DATA SETUP")
     files = get_conllu_files(
         language=config["data"]["language"],
         name=config["data"]["name"],
         splits=config["data"]["splits"],
     )
 
-    corpus = DocumentCorpus()
+    corpus = DocumentCorpus(
+        batch_first=config["data"]["batch_first"],
+        sorted=config["data"]["sorted"]
+    )
+
     for (fp, t_name, split) in files:
         corpus.parse_tree_file(fp, t_name, split)
     corpus.setup()
@@ -155,11 +163,13 @@ def train(args):
             cache="./morphological_tagging/data/pretrained_vectors",
         )
 
+    print(corpus)
+
     train_corpus = Subset(corpus, corpus.splits["train"])
     train_loader = DataLoader(
         train_corpus,
         batch_size=config["misc_hparams"]["batch_size"],
-        shuffle=True,
+        shuffle=False,
         collate_fn=corpus.collate_batch,
     )
 
@@ -182,7 +192,7 @@ def train(args):
     # *==========================================================================
     # * Model
     # *==========================================================================
-    print("\nMODEL DEFINITION")
+    print(f"\n{timer.time()} | MODEL SETUP")
     model = UDPipe2(
         char_vocab=corpus.char_vocab,
         token_vocab=corpus.token_vocab,
@@ -212,8 +222,7 @@ def train(args):
 
     trainer.logger._default_hp_metric = None
 
-    print("\nTRAINING")
-    print(f"SETUP COMPLETE IN {timer.time()}")
+    print(f"\n{timer.time()} | TRAINING")
 
     trainer.fit(model, train_dataloaders=[train_loader], val_dataloaders=[valid_loader])
 

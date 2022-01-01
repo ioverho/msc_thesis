@@ -1,5 +1,6 @@
 from typing import Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,13 +10,14 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 import pytorch_lightning as pl
 
-from morphological_tagging.metrics import clf_metrics, binary_ml_clf_metrics
+from morphological_tagging.metrics import RunningStats, RunningStatsBatch, RunningF1
 from morphological_tagging.models.modules import (
     Char2Word,
     ResidualRNN,
     ResidualMLP,
 )
 from utils.common_operations import label_smooth
+from utils.experiment import Timer
 
 
 class UDPipe2(pl.LightningModule):
@@ -163,25 +165,6 @@ class UDPipe2(pl.LightningModule):
 
         self.ignore_idx = ignore_idx
 
-    def metrics(self, lemma_logits, lemma_tags, morph_logits, morph_tags, split: str):
-
-        lemma_preds = torch.argmax(lemma_logits, dim=-1)
-        lemma_acc = torch.mean((lemma_preds[lemma_tags != self.ignore_idx] == lemma_tags[lemma_tags != self.ignore_idx]).float())
-
-        lemma_clf_metrics = {"{split}_lemma_scripts_acc": lemma_acc}
-
-        morph_clf_metrics = binary_ml_clf_metrics(
-            morph_logits.detach().cpu(),
-            morph_tags.detach().cpu(),
-            prefix=f"{split}_morph_tags",
-        )
-
-        metrics = {
-            k: v for mdict in [lemma_clf_metrics, morph_clf_metrics] for k, v in mdict.items()
-        }
-
-        return metrics
-
     def configure_optimizers(self):
 
         optimizer_embeddings = optim.SparseAdam(
@@ -319,6 +302,94 @@ class UDPipe2(pl.LightningModule):
 
         return loss, losses
 
+    def configure_metrics(self):
+
+        self.lemma_acc_epoch = RunningStatsBatch()
+        self.lemma_lev_dist = RunningStats()
+
+        self.morph_tag_acc_epoch = RunningStatsBatch()
+        self.morph_set_acc_epoch = RunningStatsBatch()
+        self.morph_f1_epoch = RunningF1()
+
+    @torch.no_grad()
+    def metrics(self, lemma_logits, lemma_tags, morph_logits, morph_tags, token_lens = None, tokens_raw  = None):
+
+        if (token_lens is not None) and (tokens_raw is not None):
+            skip_lev_dist = False
+        else:
+            skip_lev_dist = True
+
+        ## Lemma CLF metrics
+        lemma_preds = torch.argmax(lemma_logits, dim=-1).permute(1,0).detach().cpu().numpy()
+        lemma_targets = lemma_tags.permute(1,0).detach().cpu().numpy()
+        lemma_mask = np.where((lemma_tags != -1).permute(1,0).detach().cpu().numpy(), 1., np.nan)
+
+        if not skip_lev_dist:
+            # TODO (ivo): implement lev_distance reporting inside model
+            raise NotImplementedError
+            for i, (preds_seq, target_seq, seq_len) in enumerate(zip(lemma_preds, lemma_targets, token_lens)):
+                for pred, target, token in zip(preds_seq[:seq_len], target_seq[:seq_len], tokens_raw[i]):
+                    pred_lemma_script = corpus.id_to_script[pred]
+                    pred_lemma = apply_lemma_script(token, pred_lemma_script)
+
+                    target_lemma_script = corpus.id_to_script[target]
+                    target_lemma = apply_lemma_script(token, target_lemma_script)
+
+                    lemma_lev_dist(distance(pred_lemma, target_lemma), output=False)
+
+        self.lemma_acc_epoch(lemma_preds == lemma_targets, lemma_mask)
+
+        ## Morph. CLF metrics
+        morph_preds = torch.round(torch.sigmoid(morph_logits)).permute(1,0,2).detach().cpu().numpy()
+        morph_targets = morph_tags.permute(1,0,2).detach().cpu().numpy()
+        morph_mask = np.where((morph_tags != -1).permute(1,0,2).detach().cpu().numpy(), 1., np.nan)
+        morph_set_mask = np.max(morph_mask, axis=-1)
+
+        item_match = (morph_preds == morph_targets)
+        set_match = np.all((morph_preds == morph_targets), axis=-1)
+
+        # Morph. Acc
+        self.morph_tag_acc_epoch(item_match, morph_mask)
+        self.morph_set_acc_epoch(set_match, morph_set_mask)
+
+        self.morph_f1_epoch(morph_preds, morph_targets, morph_set_mask)
+
+    def log_metrics(self, split):
+
+        try:
+            lemma_acc, _, lemma_se = self.lemma_acc_epoch._return_stats()
+            lemma_dist, _, lemma_dist_se, lemma_dist_min, lemma_dist_max = self.lemma_lev_dist._return_stats()
+
+            morph_tag_acc, _, morph_tag_se = self.morph_tag_acc_epoch._return_stats()
+            morph_set_acc, _, morph_set_se = self.morph_set_acc_epoch._return_stats()
+            morph_precision, morph_recall, morph_f1 = self.morph_f1_epoch._return_stats()
+
+            metrics_dict = {
+                f"{split}_lemma_acc": lemma_acc,
+                f"{split}_lemma_se": lemma_se,
+                f"{split}_morph_tag_acc": morph_tag_acc,
+                f"{split}_morph_tag_se": morph_tag_se,
+                f"{split}_morph_set_acc": morph_set_acc,
+                f"{split}_morph_set_se": morph_set_se,
+                f"{split}_morph_precision": morph_precision,
+                f"{split}_morph_recall": morph_recall,
+                f"{split}_morph_f1": morph_f1,
+                f"{split}_lemma_dist": lemma_dist,
+                f"{split}_lemma_dist_se": lemma_dist_se,
+                f"{split}_lemma_dist_min": lemma_dist_min,
+                f"{split}_lemma_dist_max": lemma_dist_max,
+            }
+
+            self.log_dict(metrics_dict)
+
+        except ValueError:
+            return None
+
+    def on_train_epoch_start(self) -> None:
+        super().on_train_epoch_start()
+
+        self.configure_metrics()
+
     def training_step(self, batch, batch_idx, optimizer_idx):
 
         (
@@ -345,12 +416,20 @@ class UDPipe2(pl.LightningModule):
             morph_cats,
         )
 
-        self.log_dict({f"{k}_loss_train": v for k, v in losses.items()})
-        self.log_dict(
-            self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags, split="train")
-        )
+        self.log_dict({f"train_{k}_loss": v for k, v in losses.items()}, on_step=True, prog_bar=True)
+        self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        super().on_train_epoch_end()
+
+        self.log_metrics("train")
+
+    def on_validation_epoch_start(self) -> None:
+        super().on_validation_epoch_start()
+
+        self.configure_metrics()
 
     def validation_step(self, batch, batch_idx):
 
@@ -378,12 +457,20 @@ class UDPipe2(pl.LightningModule):
             morph_cats,
         )
 
-        self.log_dict({f"{k}_loss_valid": v for k, v in losses.items()})
-        self.log_dict(
-            self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags, split="valid")
-        )
+        self.log_dict({f"valid_{k}_loss": v for k, v in losses.items()}, on_epoch=True)
+        self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_validation_epoch_end(self) -> None:
+        super().on_validation_epoch_end()
+
+        self.log_metrics("validation")
+
+    def on_test_epoch_start(self) -> None:
+        super().on_test_epoch_start()
+
+        self.configure_metrics()
 
     def test_step(self, batch, batch_idx):
 
@@ -411,9 +498,12 @@ class UDPipe2(pl.LightningModule):
             morph_cats,
         )
 
-        self.log_dict({f"{k}_loss_test": v for k, v in losses.items()})
-        self.log_dict(
-            self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags, split="test")
-        )
+        self.log_dict({f"test_{k}_loss": v for k, v in losses.items()}, on_epoch=True)
+        self.metrics(lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_test_epoch_end(self) -> None:
+        super().on_test_epoch_end()
+
+        self.log_metrics("test")

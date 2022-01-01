@@ -130,6 +130,7 @@ class Document:
 
     sent_id: Union[str, None] = None
     split: Union[str, None] = None
+    treebank: Union[str, None] = None
     text: Union[str, None] = None
     tree: List = field(default_factory=lambda: Tree())
 
@@ -217,6 +218,8 @@ class DocumentCorpus(Dataset):
     treebanks: Dict = field(default_factory=lambda: defaultdict(int))
     splits: Dict = field(default_factory=lambda: defaultdict(list))
     batch_first: bool = False
+    sorted: bool = True
+    return_tokens_raw: bool = False
 
     def __len__(self):
         return len(self.docs)
@@ -225,7 +228,7 @@ class DocumentCorpus(Dataset):
         return self.docs[i]
 
     def __str__(self):
-        return f"DocumentCorpus(len={len(self.docs)})"
+        return f"DocumentCorpus(\n\tlen={len(self.docs)},\n\ttreebanks={self.treebanks.keys()},\n\tsplits={self.splits.keys()},\n\tbatch_first={self.batch_first},\n\tsorted={self.sorted}\n)"
 
     def __repr__(self):
         return self.__str__()
@@ -354,6 +357,7 @@ class DocumentCorpus(Dataset):
 
                     cur_doc = Document()
                     cur_doc.split = split
+                    cur_doc.treebank = treebank_name
                     self.splits[split if split is not None else "Undefined"].append(len(self.docs)-1)
 
                 # Get sentence ID
@@ -401,6 +405,13 @@ class DocumentCorpus(Dataset):
         # Collect information about documents
         self.treebanks = dict(self.treebanks)
         self.splits = dict(self.splits)
+
+        if self.sorted:
+            self.splits['train'] = sorted(self.splits['train'], key=lambda x: len(self.docs[x]), reverse=True)
+
+            self.splits['dev'] = sorted(self.splits['dev'], key=lambda x: len(self.docs[x]), reverse=True)
+
+            self.splits['test'] = sorted(self.splits['test'], key=lambda x: len(self.docs[x]), reverse=True)
 
     def add_word_embs(
         self, vecs: Vectors = FastText, lower_case_backup: bool = False, **kwargs
@@ -542,6 +553,7 @@ class DocumentCorpus(Dataset):
         docs_subset = [
             [
                 d.chars_tensor,
+                d.tokens,
                 d.tokens_tensor,
                 d.pretrained_embeddings,
                 d.morph_tags_tensor,
@@ -551,7 +563,7 @@ class DocumentCorpus(Dataset):
             for d in batch
         ]
 
-        chars, tokens, pretrained_embeddings, morph_tags, lemma_tags, morph_cats = list(
+        chars, tokens_raw, tokens, pretrained_embeddings, morph_tags, lemma_tags, morph_cats = list(
             map(list, zip(*docs_subset))
         )
 
@@ -566,6 +578,8 @@ class DocumentCorpus(Dataset):
         # Tokens [T_t, B]
         token_lens = [seq.size(0) for seq in tokens]
 
+        tokens_raw = [[token for token in seq] for seq in tokens_raw]
+
         tokens = pad_sequence(tokens, padding_value=0)
 
         pretrained_embeddings = pad_sequence(pretrained_embeddings, padding_value=0)
@@ -577,7 +591,10 @@ class DocumentCorpus(Dataset):
 
         morph_cats = pad_sequence(morph_cats, batch_first=self.batch_first, padding_value=-1)
 
-        return char_lens, chars, token_lens, tokens, pretrained_embeddings, lemma_tags, morph_tags, morph_cats
+        if self.return_tokens_raw:
+            return char_lens, chars, token_lens, tokens_raw, tokens, pretrained_embeddings, lemma_tags, morph_tags, morph_cats
+        else:
+            return char_lens, chars, token_lens, tokens, pretrained_embeddings, lemma_tags, morph_tags, morph_cats
 
     @property
     def pretrained_embeddings_dim(self):

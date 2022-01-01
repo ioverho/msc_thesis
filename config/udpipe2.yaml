@@ -3,6 +3,8 @@ data:
   name: merge
   splits: False
   FastText: True
+  batch_first: False
+  sorted: True
 
 model:
   c2w_kwargs:
@@ -34,16 +36,17 @@ model:
 trainer:
   gradient_clip_val: 5
   max_epochs: 60
+  precision: 16
 
 misc_hparams:
-  batch_size: 32
+  batch_size: 16
 
 logging:
-  logger: tensorboard
-  #logger_kwargs:
-  #  log_model: True
+  logger: wandb
+  logger_kwargs:
+    log_model: True
   monitor: total_loss_valid
-  monitor_mode: 'max'
+  monitor_mode: 'min'
 
 run:
   experiment_name: UDPipe2
@@ -52,4 +55,4 @@ run:
   deterministic: False
   debug: False
   fdev_run: False
-  prog_bar_refresh_rate: 5
+  prog_bar_refresh_rate: 100
