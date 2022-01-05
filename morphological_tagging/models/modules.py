@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 
 from utils.errors import ConfigurationError
+
 
 class ResidualRNN(nn.Module):
     """An RNN with residual connections.
@@ -176,8 +178,8 @@ class LayerAttention(nn.Module):
         init.uniform_(self.h_w, a=-self.u, b=self.u)
 
         if self.dropout > 0.0:
-            self._maskProbs = self.dropout * torch.ones(L)
-            self._maskVals = torch.full((L,), -float(torch.inf))
+            self.register_buffer("mask_probs", self.dropout * torch.ones(L))
+            self.register_buffer("mask_vals", torch.full((L,), -float(torch.inf)))
 
     def forward(self, h: torch.Tensor):
         """Attends on L layers of h.
@@ -191,7 +193,9 @@ class LayerAttention(nn.Module):
             # Layer dropout
             alpha = torch.softmax(
                 torch.where(
-                    torch.bernoulli(self._maskProbs).bool(), self._maskVals, self.h_w
+                    torch.bernoulli(self.get_buffer("mask_probs")).bool(),
+                    self.get_buffer("mask_vals"),
+                    self.h_w,
                 ),
                 dim=0,
             )
@@ -207,6 +211,7 @@ class ResidualMLP(nn.Module):
     """MLP layer with residual connection.
 
     """
+
     def __init__(self, act_fn: nn.Module = nn.ReLU(), **linear_kwargs) -> None:
         super().__init__()
 

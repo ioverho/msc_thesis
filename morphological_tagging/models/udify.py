@@ -1,24 +1,28 @@
-from typing import Tuple, Union
+import random
+from typing import Dict, Any, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-import torch.distributions as D
+import torch.optim as optim
+from torch.optim import AdamW
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
+from transformers import AutoConfig, AutoTokenizer, AutoModel
 import pytorch_lightning as pl
 
-from morphological_tagging.metrics import clf_metrics
+from morphological_tagging.metrics import RunningStats, RunningStatsBatch, RunningF1
 from morphological_tagging.models.modules import (
-    char2word,
-    residual_lstm,
-    residual_mlp_layer,
+    Char2Word,
+    ResidualRNN,
+    ResidualMLP,
+    LayerAttention,
 )
+from morphological_tagging.models.optim import InvSqrtWithLinearWarmupScheduler
 from utils.common_operations import label_smooth
 
 
-class UDPipe2(pl.LightningModule):
+class UDIFY(pl.LightningModule):
     """A PyTorch Lightning implementation of UDPipe2.0.
 
     As described in:
@@ -30,322 +34,503 @@ class UDPipe2(pl.LightningModule):
 
     def __init__(
         self,
-        char_vocab,
-        token_vocab,
-        c2w_kwargs: dict,
+        transformer_type: str,
+        transformer_name: str,
+        transformer_dropout: float,
+        c2w_kwargs: Dict[str, Any],
+        layer_attn_kwargs: Dict[str, Any],
+        lemma_rnn_kwargs: Dict[str, Any],
+        morph_rnn_kwargs: Dict[str, Any],
+        label_smoothing: float,
+        mask_p: float,
+        transformer_lrs: Dict[int, float],
+        rnn_lr: float,
+        clf_lr: float,
+        n_warmup_steps: int,
+        optim_kwargs: Dict[str, Any],
+        len_char_vocab: int,
+        idx_char_pad: int,
+        idx_token_pad: int,
         n_lemma_scripts: int,
         n_morph_tags: int,
-        unk_token: str = "<UNK>",
-        pad_token: str = "<PAD>",
-        w_embedding_dim: int = 512,
-        pretrained_embedding_dim: int = 300,
-        udpipe_rnn_dim: int = 512,
-        udpipe_bidirectional: bool = True,
-        dropout_p: float = 0.5,
-        token_mask_p: float = 0.2,
-        label_smoothing: float = 0.03,
-        lr: float = 1e-3,
-        betas: Tuple[float] = (0.9, 0.99),
-        scheduler_name: Tuple[str, None] = None,
-        scheduler_kwargs: Tuple[dict, None] = None,
+        n_morph_cats: int,
+        ignore_idx: int = -1,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
+        # ======================================================================
+        # Model hyperparameters
+        # ======================================================================
+        # Module hyperparmeters ================================================
+        self.transformer_type = transformer_type
+        self.transformer_name = transformer_name
+        self.transformer_dropout = transformer_dropout
         self.c2w_kwargs = c2w_kwargs
+        self.layer_attn_kwargs = layer_attn_kwargs
+        self.lemma_rnn_kwargs = lemma_rnn_kwargs
+        self.morph_rnn_kwargs = morph_rnn_kwargs
+        self.label_smoothing = label_smoothing
+
+        # Number of classes ====================================================
         self.n_lemma_scripts = n_lemma_scripts
         self.n_morph_tags = n_morph_tags
-        self.unk_token = unk_token
-        self.pad_token = pad_token
-        self.w_embedding_dim = w_embedding_dim
-        self.pretrained_embedding_dim = pretrained_embedding_dim
-        self.udpipe_rnn_dim = udpipe_rnn_dim
-        self.udpipe_bidirectional = udpipe_bidirectional
-        self.dropout_p = dropout_p
-        self.token_mask_p = token_mask_p
-        self.label_smoothing = label_smoothing
-        self.lr = lr
-        self.betas = betas
-        self.scheduler_name = scheduler_name
-        self.scheduler_kwargs  = scheduler_kwargs
+        self.n_morph_cats = n_morph_cats
 
-        # ======================================================================
-        # Embeddings
-        # ======================================================================
-        self.c2w_embeddings = char2word(
-            vocab_len=len(char_vocab),
-            padding_idx=char_vocab[self.pad_token],
-            **self.c2w_kwargs,
+        # Transformer & C2W Embeddings =========================================
+        self.config = AutoConfig.from_pretrained(
+            transformer_name,
+            dropout=transformer_dropout,
+            attention_dropout=transformer_dropout,
+        )
+        self.transformer = AutoModel.from_config(self.config)
+        self.tokenizer = AutoTokenizer.from_pretrained(transformer_name, use_fast=True,)
+
+        self.c2w = Char2Word(
+            vocab_len=len_char_vocab, padding_idx=idx_char_pad, **c2w_kwargs,
         )
 
-        c2w_out_dim = self.c2w_kwargs["out_dim"]
+        # Word-level RNNs ======================================================
+        self.lemma_layer_attn = LayerAttention(**layer_attn_kwargs)
 
-        self.w_embeddings = nn.Embedding(
-            len(token_vocab),
-            embedding_dim=self.w_embedding_dim,
-            padding_idx=token_vocab[self.pad_token],
-        )
+        self.lemma_lstm = ResidualRNN(**lemma_rnn_kwargs)
 
-        self.embed_dropout = nn.Dropout(p=self.dropout_p)
+        self.morph_layer_attn = LayerAttention(**layer_attn_kwargs)
 
-        # ======================================================================
-        # Word-level recurrent layers
-        # ======================================================================
-        self.udpipe_input_dim = (
-            c2w_out_dim + self.w_embedding_dim + self.pretrained_embedding_dim
-        )
-        self.udpipe_output_dim = (
-            2 if self.udpipe_bidirectional else 1
-        ) * self.udpipe_rnn_dim
+        self.morph_lstm = ResidualRNN(**morph_rnn_kwargs)
 
-        self.rnn_1 = residual_lstm(
-            input_size=self.udpipe_input_dim,
-            hidden_size=self.udpipe_rnn_dim,
-            bidirectional=self.udpipe_bidirectional,
-            dropout_p=self.dropout_p,
-            residual=False,
-        )
+        # Lemma classification =================================================
+        # self._lemma_in_features = (
+        #    self.word_rnn_kwargs["h_dim"] + self.c2w_kwargs["out_dim"]
+        # )
+        self._lemma_in_features = lemma_rnn_kwargs["h_dim"]
 
-        # Dropout for residual lstms are handled inside class
-        # Avoids dropping out the residual connection
-        self.rnn_2 = residual_lstm(
-            input_size=self.udpipe_output_dim,
-            hidden_size=self.udpipe_rnn_dim,
-            bidirectional=self.udpipe_bidirectional,
-            dropout_p=self.dropout_p,
-        )
-
-        self.rnn_3 = residual_lstm(
-            input_size=self.udpipe_output_dim,
-            hidden_size=self.udpipe_rnn_dim,
-            bidirectional=self.udpipe_bidirectional,
-            dropout_p=self.dropout_p,
-        )
-
-        # ======================================================================
-        # Classifiers
-        # ======================================================================
-        self.lemma_script_classifier = nn.Sequential(
-            residual_mlp_layer(
-                in_features=self.udpipe_output_dim + c2w_out_dim,
-                out_features=self.udpipe_output_dim + c2w_out_dim,
+        self.lemma_clf = nn.Sequential(
+            ResidualMLP(
+                in_features=self._lemma_in_features,
+                out_features=self._lemma_in_features,
             ),
             nn.Linear(
-                in_features=self.udpipe_output_dim + c2w_out_dim,
-                out_features=self.n_lemma_scripts,
+                in_features=self._lemma_in_features, out_features=self.n_lemma_scripts
             ),
         )
 
-        self.morph_feature_extractor = residual_mlp_layer(
-            in_features=self.udpipe_output_dim, out_features=self.udpipe_output_dim
+        # Morph classification =================================================
+        self._morph_in_features = morph_rnn_kwargs["h_dim"]
+
+        self.morph_clf_unf = nn.Sequential(
+            ResidualMLP(
+                in_features=self._morph_in_features,
+                out_features=self._morph_in_features,
+            ),
+            nn.Linear(
+                in_features=self._morph_in_features, out_features=self.n_morph_tags - 1
+            ),
         )
 
-        self.morph_joint_classifier = nn.Linear(
-            in_features=self.udpipe_output_dim, out_features=self.n_morph_tags
-        )
-
-        self.morph_single_classifiers = nn.ModuleList(
-            [
-                nn.Linear(in_features=self.udpipe_output_dim, out_features=1)
-                for i in range(self.n_morph_tags)
-            ]
+        self.morph_clf_fac = nn.Sequential(
+            ResidualMLP(
+                in_features=self._morph_in_features,
+                out_features=self._morph_in_features,
+            ),
+            nn.Linear(
+                in_features=self._morph_in_features, out_features=self.n_morph_cats
+            ),
         )
 
         # ==========================================================================
         # Regularization
         # ==========================================================================
-        self.unk_token_idx = token_vocab[unk_token]
-        self.token_mask = D.bernoulli.Bernoulli(1 - torch.tensor([token_mask_p]))
+        self.mask_p = mask_p
+
+        self.label_smoothing = label_smoothing
+
+        # ======================================================================
+        # Optimization
+        # ======================================================================
+        self.transformer_lrs = transformer_lrs
+        self.rnn_lr = rnn_lr
+        self.clf_lr = clf_lr
+        self.n_warmup_steps = n_warmup_steps
+        self.optim_kwargs = optim_kwargs
+
+        # ======================================================================
+        # Misc (e.g. logging)
+        # ======================================================================
+
+        self.ignore_idx = ignore_idx
 
         self.configure_metrics()
 
-    def configure_metrics(self):
-
-        self.morph_metrics_train = clf_metrics(
-            K=self.n_morph_tags, prefix="morph_train"
-        )
-        self.morph_metrics_valid = clf_metrics(
-            K=self.n_morph_tags, prefix="morph_valid"
-        )
-        self.morph_metrics_test = clf_metrics(K=self.n_morph_tags, prefix="morph_test")
-
-        self.lemma_metrics_train = clf_metrics(
-            K=self.n_lemma_scripts, prefix="lemma_train"
-        )
-        self.lemma_metrics_valid = clf_metrics(
-            K=self.n_lemma_scripts, prefix="lemma_valid"
-        )
-        self.lemma_metrics_test = clf_metrics(
-            K=self.n_lemma_scripts, prefix="lemma_test"
-        )
+        # Special tokens =======================================================
+        self.idx_char_pad = idx_char_pad
+        self.idx_token_pad = idx_token_pad
 
     def configure_optimizers(self):
 
-        optimizer = optim.Adam(self.parameters(), lr=self.lr, betas=self.betas)
+        transformer_layers = {
+            l: layer
+            for l, layer in enumerate(self.transformer._modules["transformer"].layer)
+        }
+        transformer_layers["embeddings"] = self.transformer._modules["embeddings"]
 
-        if self.scheduler_name is None:
-            return [optimizer]
+        lrs = [
+            {"params": v.parameters(), "lr": self.transformer_lrs[k]}
+            for k, v in transformer_layers.items()
+        ]
 
-        elif self.scheduler_name.lower() == "step":
-            scheduler = MultiStepLR(optimizer, **self.scheduler_kwargs)
+        lrs.append({"params": self.c2w.parameters(), "lr": self.rnn_lr})
+        lrs.append({"params": self.lemma_layer_attn.parameters(), "lr": self.rnn_lr})
+        lrs.append({"params": self.lemma_lstm.parameters(), "lr": self.rnn_lr})
+        lrs.append({"params": self.morph_layer_attn.parameters(), "lr": self.rnn_lr})
+        lrs.append({"params": self.morph_lstm.parameters(), "lr": self.rnn_lr})
 
-        elif self.scheduler_name.lower() == "plateau":
-            scheduler_ = ReduceLROnPlateau(optimizer, **self.scheduler_kwargs)
+        lrs.append({"params": self.lemma_clf.parameters(), "lr": self.clf_lr})
+        lrs.append({"params": self.morph_clf_unf.parameters(), "lr": self.clf_lr})
+        lrs.append({"params": self.morph_clf_fac.parameters(), "lr": self.clf_lr})
 
-            scheduler = {
-                "scheduler": scheduler_,
-                "reduce_on_plateau": True,
-                "monitor": "Valid Accuracy",
-                "interval": "epoch",
-                "name": "LR Reduce on Plateau",
-            }
+        optimizer = AdamW(lrs, **self.optim_kwargs)
 
-        return [optimizer], [scheduler]
+        scheduler = InvSqrtWithLinearWarmupScheduler(
+            optimizer, default_lrs=lrs, n_warmup_steps=self.n_warmup_steps
+        )
+
+        lr_scheduler_config = {
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "interval": "step",
+            "frequency": 1,
+        }
+
+        return lr_scheduler_config
 
     def forward(
         self,
         char_lens: Union[list, torch.Tensor],
         chars: torch.Tensor,
         token_lens: Union[list, torch.Tensor],
-        tokens: torch.Tensor,
-        pretrained_embeddings: torch.Tensor,
+        tokens_raw: torch.Tensor,
+        skip_morph_reg: bool = False,
     ) -> Tuple[torch.Tensor]:
 
+        # The lens tensors need to be on CPU in case of packing
         if isinstance(char_lens, list):
             char_lens = torch.tensor(char_lens, dtype=torch.long, device="cpu")
 
         if isinstance(token_lens, list):
             token_lens = torch.tensor(token_lens, dtype=torch.long, device="cpu")
 
-        # ======================================================================
-        # Embeddings
-        # ======================================================================
-        # Get char2word embeddings
-        c2w_embs_ = self.c2w_embeddings(chars, char_lens)
+        batch_size = len(tokens_raw)
+
+        # ==============================================================================
+        # Encoding
+        # ==============================================================================
+        if self.mask_p >= 0.0:
+            tokens = [
+                [
+                    t if random.random() >= self.mask_p else self.tokenizer._mask_token
+                    for t in seq
+                ]
+                for seq in tokens_raw
+            ]
+
+        bert_input = self.tokenizer(
+            tokens_raw,
+            return_tensors="pt",
+            padding=True,
+            return_offsets_mapping=True,
+            is_split_into_words=True,
+        )
+
+        token_map = [
+            torch.logical_and(
+                bert_input["offset_mapping"][i, :, 0]
+                == 0,  # Only keep the first BPE, i.e. those with non-zero span start
+                bert_input["offset_mapping"][i, :, 1]
+                != 0,  # Remove [CLS], [END], [PAD] tokens, i.e. those with non-zero span end
+            )
+            for i in range(batch_size)
+        ]
+
+        bert_output = self.transformer(
+            bert_input["input_ids"].to(self.device),
+            bert_input["attention_mask"].to(self.device),
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        h_bert = torch.stack(bert_output["hidden_states"], dim=2)
+
+        c2w_embeds_ = self.c2w(chars, char_lens)
 
         seqs = []
         beg = torch.tensor([0])
         for l in token_lens:
-            seqs.append(c2w_embs_[beg : beg + l])
+            seqs.append(c2w_embeds_[beg : beg + l])
             beg += l
 
-        c2w_embs = pad_sequence(seqs, padding_value=0.0)
-
-        # Get word embeddings
-        # Replace token with <UNK> with a certain probability
-        tokens_ = torch.where(
-            self.token_mask.sample(tokens.size()).squeeze().bool().to(self.device),
-            tokens,
-            self.unk_token_idx,
+        c2w_embeds = pad_sequence(
+            seqs, padding_value=self.idx_token_pad, batch_first=True
         )
 
-        w_embeds = self.w_embeddings(tokens_)
+        # ==============================================================================
+        # Lemma decoder
+        # ==============================================================================
+        h_lemma = self.lemma_layer_attn(h_bert)
 
-        # Concatenate all embeddings together
-        embeds = torch.cat([c2w_embs, w_embeds, pretrained_embeddings], dim=-1)
-
-        embeds = self.embed_dropout(embeds)
-
-        # ======================================================================
-        # Word-level recurrent layers
-        # ======================================================================
-        # Pass the word embeddings through the LSTMs
-        embeds = pack_padded_sequence(embeds, token_lens, enforce_sorted=False)
-
-        # Input to hidden, no residual connection
-        h_t = self.rnn_1(embeds)
-
-        # Hidden to hidden, residual connection
-        h_t = self.rnn_2(h_t)
-        h_t = self.rnn_3(h_t)
-
-        # ======================================================================
-        # Classifiers
-        # ======================================================================
-        # No need for unpacking
-        # Using packed 'vector' for token-level sequence classification
-        lemma_script_logits = self.lemma_script_classifier(
-            torch.cat([c2w_embs_, h_t.data], dim=-1)
+        h_lemma_sliced = pad_sequence(
+            [h_lemma[i, token_map[i], :] for i in range(batch_size)], batch_first=True
         )
 
-        morph_feats = self.morph_feature_extractor(h_t.data)
+        h_lemma = self.lemma_lstm(h_lemma_sliced + c2w_embeds)
 
-        morph_logits = self.morph_joint_classifier(morph_feats)
+        lemma_logits = self.lemma_clf(h_lemma)
 
-        if self.training:
-            morph_reg_logits = [
-                clf(morph_feats) for clf in self.morph_single_classifiers
-            ]
+        # ==============================================================================
+        # Morph tag decoder
+        # ==============================================================================
+        h_morph = self.morph_layer_attn(h_bert)
 
-            return lemma_script_logits, morph_logits, morph_reg_logits
+        h_morph_sliced = pad_sequence(
+            [h_morph[i, token_map[i], :] for i in range(batch_size)], batch_first=True
+        )
 
-        else:
+        h_morph = self.morph_lstm(h_morph_sliced + c2w_embeds)
 
-            return lemma_script_logits, morph_logits
+        morph_logits_unf = self.morph_clf_unf(h_morph)
+
+        if not skip_morph_reg:
+            morph_logits_fac = self.morph_clf_fac(h_morph)
+
+            return lemma_logits, morph_logits_unf, morph_logits_fac
+
+        return lemma_logits, morph_logits_unf
 
     def loss(
         self,
-        lemma_script_logits: torch.Tensor,
-        morph_logits: torch.Tensor,
+        lemma_logits: torch.Tensor,
         lemma_tags: torch.Tensor,
+        morph_logits_unf: torch.Tensor,
         morph_tags: torch.Tensor,
-        morph_reg_logits: Union[torch.Tensor, None] = None,
+        morph_logits_fac: Union[torch.Tensor, None] = None,
+        morph_cats: Union[torch.Tensor, None] = None,
     ) -> torch.Tensor:
 
         lemma_loss = F.cross_entropy(
-            lemma_script_logits, lemma_tags, label_smoothing=self.label_smoothing
-        )
-        morph_loss = F.binary_cross_entropy_with_logits(
-            morph_logits, label_smooth(self.label_smoothing, morph_tags)
+            lemma_logits.permute(0, 2, 1),
+            lemma_tags,
+            ignore_index=self.ignore_idx,
+            label_smoothing=self.label_smoothing,
         )
 
-        loss = lemma_loss + morph_loss
-        losses = {"lemma": lemma_loss, "morph": morph_loss}
+        morph_unf_loss = F.binary_cross_entropy_with_logits(
+            morph_logits_unf,
+            label_smooth(self.label_smoothing, morph_tags.float()),
+            reduction="none",
+        )
+        morph_unf_loss = torch.mean(morph_unf_loss[morph_tags != self.ignore_idx])
 
-        if morph_reg_logits is not None:
-            morph_reg_loss = sum(
-                F.binary_cross_entropy_with_logits(
-                    logits,
-                    label_smooth(self.label_smoothing, morph_tags[:, i].unsqueeze(-1)),
-                )
-                for i, logits in enumerate(morph_reg_logits)
+        if (morph_logits_fac is not None) and (morph_cats is not None):
+            morph_fac_loss = F.binary_cross_entropy_with_logits(
+                morph_logits_fac,
+                label_smooth(self.label_smoothing, morph_cats.float()),
+                reduction="none",
             )
+            morph_fac_loss = torch.mean(morph_fac_loss[morph_cats != self.ignore_idx])
 
-            loss += morph_reg_loss
-            losses["morph_reg"] = morph_reg_loss
+            loss = lemma_loss + morph_unf_loss + morph_fac_loss
+            losses = {
+                "total": loss,
+                "lemma": lemma_loss,
+                "morph": morph_unf_loss,
+                "morph_reg": morph_fac_loss,
+            }
 
-        losses["total"] = loss
+        else:
+            loss = lemma_loss + morph_unf_loss
+            losses = {"total": loss, "lemma": lemma_loss, "morph": morph_unf_loss}
 
         return loss, losses
 
+    def configure_metrics(self):
+
+        self._metrics_dict = {
+            "train": {
+                "lemma_acc": RunningStatsBatch(),
+                "lemma_lev_dist": RunningStats(),
+                "morph_tag_acc": RunningStatsBatch(),
+                "morph_set_acc": RunningStatsBatch(),
+                "morph_f1": RunningF1(),
+            },
+            "valid": {
+                "lemma_acc": RunningStatsBatch(),
+                "lemma_lev_dist": RunningStats(),
+                "morph_tag_acc": RunningStatsBatch(),
+                "morph_set_acc": RunningStatsBatch(),
+                "morph_f1": RunningF1(),
+            },
+            "test": {
+                "lemma_acc": RunningStatsBatch(),
+                "lemma_lev_dist": RunningStats(),
+                "morph_tag_acc": RunningStatsBatch(),
+                "morph_set_acc": RunningStatsBatch(),
+                "morph_f1": RunningF1(),
+            },
+            "predict": {
+                "lemma_acc": RunningStatsBatch(),
+                "lemma_lev_dist": RunningStats(),
+                "morph_tag_acc": RunningStatsBatch(),
+                "morph_set_acc": RunningStatsBatch(),
+                "morph_f1": RunningF1(),
+            },
+        }
+
+    def clear_metrics(self, split: str):
+
+        self._metrics_dict[split] = {
+            "lemma_acc": RunningStatsBatch(),
+            "lemma_lev_dist": RunningStats(),
+            "morph_tag_acc": RunningStatsBatch(),
+            "morph_set_acc": RunningStatsBatch(),
+            "morph_f1": RunningF1(),
+        }
+
+    @torch.no_grad()
+    def metrics(
+        self,
+        split: str,
+        lemma_logits,
+        lemma_tags,
+        morph_logits,
+        morph_tags,
+        token_lens=None,
+        tokens_raw=None,
+    ):
+
+        if (token_lens is not None) and (tokens_raw is not None):
+            skip_lev_dist = False
+        else:
+            skip_lev_dist = True
+
+        ## Lemma CLF metrics
+        lemma_preds = torch.argmax(lemma_logits, dim=-1).detach().cpu().numpy()
+        lemma_targets = lemma_tags.detach().cpu().numpy()
+        lemma_mask = np.where((lemma_tags != -1).detach().cpu().numpy(), 1.0, np.nan)
+
+        if not skip_lev_dist:
+            # TODO (ivo): implement lev_distance reporting inside model
+            raise NotImplementedError
+            # for i, (preds_seq, target_seq, seq_len) in enumerate(
+            #    zip(lemma_preds, lemma_targets, token_lens)
+            # ):
+            #    for pred, target, token in zip(
+            #        preds_seq[:seq_len], target_seq[:seq_len], tokens_raw[i]
+            #    ):
+            #        pred_lemma_script = corpus.id_to_script[pred]
+            #        pred_lemma = apply_lemma_script(token, pred_lemma_script)
+
+            #        target_lemma_script = corpus.id_to_script[target]
+            #        target_lemma = apply_lemma_script(token, target_lemma_script)
+
+            #        lemma_lev_dist(distance(pred_lemma, target_lemma), output=False)
+
+        self._metrics_dict[split]["lemma_acc"](lemma_preds == lemma_targets, lemma_mask)
+
+        ## Morph. CLF metrics
+        morph_preds = torch.round(torch.sigmoid(morph_logits)).detach().cpu().numpy()
+        morph_targets = morph_tags.detach().cpu().numpy()
+        morph_mask = np.where((morph_tags != -1).detach().cpu().numpy(), 1.0, np.nan)
+        morph_set_mask = np.max(morph_mask, axis=-1)
+
+        item_match = morph_preds == morph_targets
+        set_match = np.all((morph_preds == morph_targets), axis=-1)
+
+        # Morph. Acc
+        self._metrics_dict[split]["morph_tag_acc"](item_match, morph_mask)
+        self._metrics_dict[split]["morph_set_acc"](set_match, morph_set_mask)
+
+        self._metrics_dict[split]["morph_f1"](
+            morph_preds, morph_targets, morph_set_mask
+        )
+
+    def log_metrics(self, split):
+
+        lemma_acc, _, lemma_se = self._metrics_dict[split]["lemma_acc"]._return_stats()
+        (lemma_dist, _, lemma_dist_se, _, _,) = self._metrics_dict[split][
+            "lemma_lev_dist"
+        ]._return_stats()
+
+        morph_tag_acc, _, morph_tag_se = self._metrics_dict[split][
+            "morph_tag_acc"
+        ]._return_stats()
+        morph_set_acc, _, morph_set_se = self._metrics_dict[split][
+            "morph_set_acc"
+        ]._return_stats()
+        (morph_precision, morph_recall, morph_f1,) = self._metrics_dict[split][
+            "morph_f1"
+        ]._return_stats()
+
+        metrics_dict = {
+            f"{split}_lemma_acc": lemma_acc,
+            f"{split}_lemma_se": lemma_se,
+            f"{split}_morph_tag_acc": morph_tag_acc,
+            f"{split}_morph_tag_se": morph_tag_se,
+            f"{split}_morph_set_acc": morph_set_acc,
+            f"{split}_morph_set_se": morph_set_se,
+            f"{split}_morph_precision": morph_precision,
+            f"{split}_morph_recall": morph_recall,
+            f"{split}_morph_f1": morph_f1,
+            f"{split}_lemma_dist": lemma_dist,
+            f"{split}_lemma_dist_se": lemma_dist_se,
+        }
+
+        self.log_dict(metrics_dict)
+        # return metrics_dict
+
     def training_step(self, batch, batch_idx):
+
+        # For the first epoch, the transformer is not trained
+        if self.current_epoch == 0:
+            for p in self.transformer.parameters():
+                p.requires_grad = False
+
         (
             char_lens,
             chars,
             token_lens,
-            tokens,
-            pretrained_embeddings,
-            morph_tags,
+            tokens_raw,
+            _,
+            _,
             lemma_tags,
-        ) = batch[0]
+            morph_tags,
+            morph_cats,
+        ) = batch
 
         lemma_logits, morph_logits, morph_reg_logits = self.forward(
-            char_lens, chars, token_lens, tokens, pretrained_embeddings
+            char_lens, chars, token_lens, tokens_raw
         )
 
         loss, losses = self.loss(
-            lemma_logits, morph_logits, lemma_tags, morph_tags, morph_reg_logits
+            lemma_logits,
+            lemma_tags,
+            morph_logits,
+            morph_tags,
+            morph_reg_logits,
+            morph_cats,
         )
 
-        self.log_dict({f"{k}_loss_train": v for k, v in losses.items()})
         self.log_dict(
-            self.lemma_metrics_train(torch.softmax(lemma_logits, dim=-1), lemma_tags)
+            {f"train_{k}_loss": v for k, v in losses.items()},
+            on_step=True,
+            prog_bar=True,
         )
-        self.log_dict(
-            self.morph_metrics_train(torch.softmax(morph_logits, dim=-1), morph_tags)
-        )
+        self.metrics("train", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        self.log_metrics("train")
+        self.clear_metrics("train")
 
     def validation_step(self, batch, batch_idx):
 
@@ -353,27 +538,39 @@ class UDPipe2(pl.LightningModule):
             char_lens,
             chars,
             token_lens,
-            tokens,
-            pretrained_embeddings,
-            morph_tags,
+            tokens_raw,
+            _,
+            _,
             lemma_tags,
+            morph_tags,
+            morph_cats,
         ) = batch
 
-        lemma_logits, morph_logits = self.forward(
-            char_lens, chars, token_lens, tokens, pretrained_embeddings
+        lemma_logits, morph_logits, morph_reg_logits = self.forward(
+            char_lens, chars, token_lens, tokens_raw
         )
 
-        loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
+        loss, losses = self.loss(
+            lemma_logits,
+            lemma_tags,
+            morph_logits,
+            morph_tags,
+            morph_reg_logits,
+            morph_cats,
+        )
 
-        self.log_dict({f"{k}_loss_valid": v for k, v in losses.items()})
         self.log_dict(
-            self.lemma_metrics_valid(torch.softmax(lemma_logits, dim=-1), lemma_tags)
+            {f"valid_{k}_loss": v for k, v in losses.items()},
+            on_step=True,
+            prog_bar=True,
         )
-        self.log_dict(
-            self.morph_metrics_valid(torch.softmax(morph_logits, dim=-1), morph_tags)
-        )
+        self.metrics("valid", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_validation_epoch_end(self) -> None:
+        self.log_metrics("valid")
+        self.clear_metrics("valid")
 
     def test_step(self, batch, batch_idx):
 
@@ -381,24 +578,36 @@ class UDPipe2(pl.LightningModule):
             char_lens,
             chars,
             token_lens,
-            tokens,
-            pretrained_embeddings,
-            morph_tags,
+            tokens_raw,
+            _,
+            _,
             lemma_tags,
+            morph_tags,
+            morph_cats,
         ) = batch
 
-        lemma_logits, morph_logits = self.forward(
-            char_lens, chars, token_lens, tokens, pretrained_embeddings
+        lemma_logits, morph_logits, morph_reg_logits = self.forward(
+            char_lens, chars, token_lens, tokens_raw
         )
 
-        loss, losses = self.loss(lemma_logits, morph_logits, lemma_tags, morph_tags)
+        loss, losses = self.loss(
+            lemma_logits,
+            lemma_tags,
+            morph_logits,
+            morph_tags,
+            morph_reg_logits,
+            morph_cats,
+        )
 
-        self.log_dict({f"{k}_loss_test": v for k, v in losses.items()})
         self.log_dict(
-            self.lemma_metrics_test(torch.softmax(lemma_logits, dim=-1), lemma_tags)
+            {f"test_{k}_loss": v for k, v in losses.items()},
+            on_step=True,
+            prog_bar=True,
         )
-        self.log_dict(
-            self.morph_metrics_test(torch.softmax(morph_logits, dim=-1), morph_tags)
-        )
+        self.metrics("test", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
+
+    def on_test_epoch_end(self) -> None:
+        self.log_metrics("test")
+        self.clear_metrics("test")
