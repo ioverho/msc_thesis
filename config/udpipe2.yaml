@@ -1,10 +1,15 @@
 data:
   language: English
-  name: merge
-  splits: False
-  FastText: True
+  treebank_name: merge
   batch_first: False
-  sorted: True
+  len_sorted: True
+  batch_size: 16
+
+preprocess:
+  word_embeddings: True
+  context_embeddings: False
+  transformer_name: "bert-base-multilingual-uncased"
+  batch_size: 128
 
 model:
   c2w_kwargs:
@@ -37,15 +42,14 @@ trainer:
   gradient_clip_val: 5
   max_epochs: 60
   precision: 16
-
-misc_hparams:
-  batch_size: 16
+  num_sanity_val_steps: 0
 
 logging:
-  logger: wandb
+  logger: tensorboard
   logger_kwargs:
     log_model: True
-  monitor: total_loss_valid
+    offline: False
+  monitor: valid_total_loss
   monitor_mode: 'min'
 
 run:

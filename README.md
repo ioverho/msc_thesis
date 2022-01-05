@@ -31,3 +31,18 @@
   <a href="#related">Related</a> •
   <a href="#license">License</a>
 </p>
+<br><br><br><br><br>
+
+[//]: # (Morph Tagging)
+<h3 align="left">
+  Multi-Lingual Morphological Tagging in Context
+</h3>
+
+[//]: # (UDPipe2)
+<p align="center">
+    <img
+    src="./misc/Figures/UDPipe2 Pipeline.png"
+    alt="UDPipe2's pipeline"
+    style="float: center;"
+    />
+</p>

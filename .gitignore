@@ -127,3 +127,4 @@ klad*.*
 klad.py
 lightning_logs/
 vscode/
+*.env

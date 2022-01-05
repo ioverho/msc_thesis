@@ -17,7 +17,6 @@ from morphological_tagging.models.modules import (
     ResidualMLP,
 )
 from utils.common_operations import label_smooth
-from utils.experiment import Timer
 
 
 class UDPipe2(pl.LightningModule):
@@ -396,12 +395,13 @@ class UDPipe2(pl.LightningModule):
             char_lens,
             chars,
             token_lens,
+            _,
             tokens,
             pretrained_embeddings,
             lemma_tags,
             morph_tags,
             morph_cats,
-        ) = batch[0]
+        ) = batch
 
         lemma_logits, morph_logits, morph_reg_logits = self.forward(
             char_lens, chars, token_lens, tokens, pretrained_embeddings
@@ -437,6 +437,7 @@ class UDPipe2(pl.LightningModule):
             char_lens,
             chars,
             token_lens,
+            _,
             tokens,
             pretrained_embeddings,
             lemma_tags,
@@ -465,7 +466,7 @@ class UDPipe2(pl.LightningModule):
     def on_validation_epoch_end(self) -> None:
         super().on_validation_epoch_end()
 
-        self.log_metrics("validation")
+        self.log_metrics("valid")
 
     def on_test_epoch_start(self) -> None:
         super().on_test_epoch_start()
@@ -478,6 +479,7 @@ class UDPipe2(pl.LightningModule):
             char_lens,
             chars,
             token_lens,
+            _,
             tokens,
             pretrained_embeddings,
             lemma_tags,

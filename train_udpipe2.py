@@ -8,8 +8,8 @@ import warnings
 from shutil import copyfile
 
 # 3rd Party
+from tqdm import tqdm
 import torch
-from torch.utils.data import DataLoader, Subset
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import (
     ModelCheckpoint,
@@ -18,16 +18,18 @@ from pytorch_lightning.callbacks import (
     TQDMProgressBar,
 )
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+import dotenv
 
 # User-defined
-from morphological_tagging.data.corpus import get_conllu_files, DocumentCorpus, FastText
+from morphological_tagging.data.corpus import TreebankDataModule
 from morphological_tagging.models.udpipe2 import UDPipe2
-
+from morphological_tagging.models.preprocessor import UDPipe2PreProcessor
 from utils.experiment import find_version, set_seed, set_deterministic, Timer
 from utils.errors import ConfigurationError
 
 CHECKPOINT_DIR = "./morphological_tagging/checkpoints"
 
+dotenv.load_dotenv(override=True)
 
 def train(args):
     """Train loop.
@@ -39,6 +41,8 @@ def train(args):
     # *==========================================================================
     # *Config reading
     # *==========================================================================
+    print(f"Config path: {args.config_file_path}\n\n")
+
     with open(args.config_file_path, "r") as f:
         config = yaml.safe_load(f)
 
@@ -52,7 +56,7 @@ def train(args):
     # *==========================================================================
     print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
-    full_name = f"{config['run']['experiment_name']}_{config['data']['language']}_{config['data']['name']}"
+    full_name = f"{config['run']['experiment_name']}_{config['data']['language']}_{config['data']['treebank_name']}"
 
     # == Version
     # ==== ./checkpoints/data_version/version_number
@@ -101,6 +105,7 @@ def train(args):
         )
 
     elif config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
+
         logger = WandbLogger(
             project="morphological_tagging",
             save_dir=f"{CHECKPOINT_DIR}/{full_version}",
@@ -139,69 +144,34 @@ def train(args):
     # * Dataset
     # *==========================================================================
     print(f"\n{timer.time()} | DATA SETUP")
-    files = get_conllu_files(
-        language=config["data"]["language"],
-        name=config["data"]["name"],
-        splits=config["data"]["splits"],
+    data_module = TreebankDataModule(**config['data'])
+    data_module.prepare_data()
+    data_module.setup()
+
+    print(f"\n{timer.time()} | DATA PRE-PROCESSING")
+    preprocessor = UDPipe2PreProcessor(
+        language=config['data']['language'],
+        **config['preprocess']
     )
 
-    corpus = DocumentCorpus(
-        batch_first=config["data"]["batch_first"],
-        sorted=config["data"]["sorted"]
-    )
-
-    for (fp, t_name, split) in files:
-        corpus.parse_tree_file(fp, t_name, split)
-    corpus.setup()
-
-    corpus.set_lemma_tags()
-
-    if config["data"]["FastText"]:
-        corpus.add_word_embs(
-            FastText,
-            language=config["data"]["language"],
-            cache="./morphological_tagging/data/pretrained_vectors",
-        )
-
-    print(corpus)
-
-    train_corpus = Subset(corpus, corpus.splits["train"])
-    train_loader = DataLoader(
-        train_corpus,
-        batch_size=config["misc_hparams"]["batch_size"],
-        shuffle=False,
-        collate_fn=corpus.collate_batch,
-    )
-
-    valid_corpus = Subset(corpus, corpus.splits["dev"])
-    valid_loader = DataLoader(
-        valid_corpus,
-        batch_size=config["misc_hparams"]["batch_size"],
-        shuffle=False,
-        collate_fn=corpus.collate_batch,
-    )
-
-    test_corpus = Subset(corpus, corpus.splits["test"])
-    test_loader = DataLoader(
-        test_corpus,
-        batch_size=config["misc_hparams"]["batch_size"],
-        shuffle=False,
-        collate_fn=corpus.collate_batch,
-    )
+    for batch in tqdm(data_module._preprocess_dataloader(
+        batch_size= preprocessor.batch_size if preprocessor.batch_size else config['data']['batch_size']
+        ), mininterval=5):
+        preprocessor(batch, set_doc_attr=True)
 
     # *==========================================================================
     # * Model
     # *==========================================================================
     print(f"\n{timer.time()} | MODEL SETUP")
     model = UDPipe2(
-        char_vocab=corpus.char_vocab,
-        token_vocab=corpus.token_vocab,
-        unk_token=corpus.unk_token,
-        pad_token=corpus.pad_token,
-        pretrained_embedding_dim=corpus.pretrained_embeddings_dim,
-        n_lemma_scripts=len(corpus.script_counter),
-        n_morph_tags=len(corpus.morph_tag_vocab),
-        n_morph_cats=len(corpus.morph_cat_vocab),
+        char_vocab=data_module.corpus.char_vocab,
+        token_vocab=data_module.corpus.token_vocab,
+        unk_token=data_module.corpus.unk_token,
+        pad_token=data_module.corpus.pad_token,
+        pretrained_embedding_dim=data_module.corpus.pretrained_embeddings_dim,
+        n_lemma_scripts=len(data_module.corpus.script_counter),
+        n_morph_tags=len(data_module.corpus.morph_tag_vocab),
+        n_morph_cats=len(data_module.corpus.morph_cat_vocab),
         **config["model"],
     )
 
@@ -222,9 +192,13 @@ def train(args):
 
     trainer.logger._default_hp_metric = None
 
+    print(f"\n{timer.time()} | SANITY CHECK")
+
+    trainer.test(model, datamodule=data_module, verbose=True)
+
     print(f"\n{timer.time()} | TRAINING")
 
-    trainer.fit(model, train_dataloaders=[train_loader], val_dataloaders=[valid_loader])
+    trainer.fit(model, datamodule=data_module)
 
     # *##########
     # * TESTING #
@@ -239,7 +213,7 @@ def train(args):
         model.freeze()
         model.eval()
 
-        test_result = trainer.test(model, dataloaders=test_loader, verbose=True)
+        test_result = trainer.test(model, datamodule=data_module, verbose=True)
 
         timer.end()
 
@@ -270,5 +244,6 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", message=r".*GPU available but not used .*")
     warnings.filterwarnings("ignore", message=r".*shuffle=True")
     warnings.filterwarnings("ignore", message=r".*Trying to infer .*")
+    warnings.filterwarnings("ignore", message=r".*DataModule.setup has already been called.*")
 
     train(args)
