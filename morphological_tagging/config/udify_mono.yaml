@@ -3,32 +3,23 @@ data:
   treebank_name: pud
   batch_first: True
   len_sorted: True
-  batch_size: 8
+  batch_size: 1
 
 model:
   transformer_type: "distilbert"
   transformer_name: "distilbert-base-multilingual-cased"
-  transformer_dropout: 0.2
+  transformer_dropout: 0.25
   c2w_kwargs:
       embedding_dim: 256
       h_dim: 384
       bidirectional: True
-      out_dim: 0
+      out_dim: -1
       batch_first: True
-      dropout: 0.0
+      dropout: 0.25
   layer_attn_kwargs:
-    L: 7
+    L: 6
     dropout: 0.2
-  lemma_rnn_kwargs:
-      input_size: 768
-      h_dim: 768
-      num_layers: 2
-      residual: True
-      dropout: 0.5
-      rnn_type: "lstm"
-      batch_first: True
-      bidirectional: True
-  morph_rnn_kwargs:
+  rnn_kwargs:
       input_size: 768
       h_dim: 768
       num_layers: 2
@@ -40,7 +31,6 @@ model:
   label_smoothing: 0.03
   mask_p: 0.25
   transformer_lrs:
-      embeddings: 0
       0: 1.0e-5
       1: 1.0e-5
       2: 1.0e-5
@@ -55,10 +45,11 @@ model:
       - 0.9
       - 0.99
     weight_decay: 1.0e-2
+  unfreeze_transformer_epoch: 1
 
 
 trainer:
-  gradient_clip_val: 5
+  gradient_clip_val: 2
   max_epochs: 50
   precision: 16
   num_sanity_val_steps: 0

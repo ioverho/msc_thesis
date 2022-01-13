@@ -1,0 +1,33 @@
+defaults:
+  - _self_
+  - data: default
+  - model: udpipe2
+  - preprocessor: udpipe2
+
+experiment_name: UDPipe2_hydra
+
+print_hparams: False
+debug: False
+deterministic: False
+
+gpu: 1
+gradient_clip_val: 2
+max_epochs: 60
+seed: 1
+
+monitor: valid_loss_total
+monitor_mode: "min"
+
+prog_bar_size: 10
+
+logger:
+  project: morphological_tagging_v2
+  mode: online
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .

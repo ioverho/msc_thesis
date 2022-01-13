@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class InvSqrtWithLinearWarmupScheduler():
+
+class InvSqrtWithLinearWarmupScheduler:
     """A learning rate scheduler according to the Attention is All You Need paper.
     Unlike original implementation, maximum lr scale (immediately after warmup) is 1.
     The actual learning rates are controlled by setting the defaults.
@@ -19,24 +20,25 @@ class InvSqrtWithLinearWarmupScheduler():
     """
 
     def __init__(self, optimizer, default_lrs, n_warmup_steps):
-        self._optimizer = optimizer
-        self._default_lrs = deepcopy([pg['lr'] for pg in default_lrs])
+        self.optimizer = optimizer
+        self._default_lrs = deepcopy([pg["lr"] for pg in default_lrs])
         self.n_warmup_steps = n_warmup_steps
 
         self.n_steps = 0
+        self._frozen = False
 
     def step_and_update_lr(self):
         """Step with the inner optimizer"""
         self._update_learning_rate()
-        self._optimizer.step()
+        self.optimizer.step()
 
     def step(self):
         """Step with the inner optimizer"""
-        self.step_and_update_lr()
+        self._update_learning_rate()
 
     def zero_grad(self):
         """Zero out the gradients with the inner optimizer"""
-        self._optimizer.zero_grad()
+        self.optimizer.zero_grad()
 
     def _get_lr_scale(self):
 
@@ -46,12 +48,36 @@ class InvSqrtWithLinearWarmupScheduler():
 
         return lr_scale
 
+    def freeze(self):
+        self._frozen = True
+
+    def thaw(self):
+        self._frozen = False
+
+    def unfreeze(self):
+        self.thaw()
+
     def _update_learning_rate(self):
         """ Learning rate scheduling per step """
 
-        self.n_steps += 1
+        if self._frozen:
+            for p_group, default_lr in zip(
+                self.optimizer.param_groups, self._default_lrs
+            ):
+                p_group["lr"] = 0
 
-        for p_group, default_lr in zip(
-            self._optimizer.param_groups, self._default_lrs
-        ):
-            p_group["lr"] = default_lr * self._get_lr_scale()
+        else:
+            self.n_steps += 1
+
+            for p_group, default_lr in zip(
+                self.optimizer.param_groups, self._default_lrs
+            ):
+                p_group["lr"] = default_lr * self._get_lr_scale()
+
+    def state_dict(self):
+        return {
+            "_default_lrs": self._default_lrs,
+            "n_warmup_steps": self.n_warmup_steps,
+            "n_steps": self.n_steps,
+            "_frozen": self._frozen,
+        }

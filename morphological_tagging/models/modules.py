@@ -127,7 +127,7 @@ class Char2Word(nn.Module):
 
         self.rnn_dropout = nn.Dropout(p=self.dropout)
 
-        if self.out_dim > 0:
+        if self.out_dim >= 0:
             self.out_project = nn.Linear(
                 in_features=(2 if self.bidirectional else 1) * self.h_dim,
                 out_features=self.out_dim,

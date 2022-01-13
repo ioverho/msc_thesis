@@ -2,13 +2,11 @@
 # *Package import
 # *==============================================================================
 import os
-import yaml
 import argparse
 import warnings
-from shutil import copyfile
+import yaml
 
 # 3rd Party
-from tqdm import tqdm
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import (
@@ -19,6 +17,8 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 import dotenv
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 # User-defined
 from morphological_tagging.data.corpus import TreebankDataModule
@@ -30,7 +30,14 @@ CHECKPOINT_DIR = "./morphological_tagging/checkpoints"
 
 dotenv.load_dotenv(override=True)
 
-def train(args):
+os.environ["HYDRA_FULL_ERROR"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+
+@hydra.main(
+    config_path="./morphological_tagging/config", config_name="udify_experiment"
+)
+def train(config: DictConfig):
     """Train loop.
 
     """
@@ -40,43 +47,34 @@ def train(args):
     # *==========================================================================
     # *Config reading
     # *==========================================================================
-    print(f"Config path: {args.config_file_path}\n\n")
-
-    with open(args.config_file_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    print(50 * "+")
-    print("HYPER-PARAMETERS")
-    print(yaml.dump(config))
-    print(50 * "+")
+    if config["print_hparams"]:
+        print(50 * "+")
+        print(f"\n{timer.time()} | HYPER-PARAMETERS")
+        print(OmegaConf.to_yaml(config))
+        print(50 * "+")
+    else:
+        print(f"\n{timer.time()} | HYPER-PARAMETERS")
+        print("Loaded.")
 
     # *==========================================================================
     # *Experiment
     # *==========================================================================
     print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
-    full_name = f"{config['run']['experiment_name']}_{config['data']['language']}_{config['data']['treebank_name']}"
+    full_name = f"{config['experiment_name']}_{config['data']['language']}_{config['data']['treebank_name']}"
 
-    # == Version
-    # ==== ./checkpoints/data_version/version_number
     full_version, experiment_dir, version = find_version(
-        full_name,
-        CHECKPOINT_DIR,
-        debug=config["run"]["debug"]
+        full_name, CHECKPOINT_DIR, debug=config["debug"]
     )
 
     os.makedirs(f"{CHECKPOINT_DIR}/{full_version}", exist_ok=True)
     os.makedirs(f"{CHECKPOINT_DIR}/{full_version}/checkpoints", exist_ok=True)
 
-    copyfile(
-        args.config_file_path,
-        f"{CHECKPOINT_DIR}/{full_version}/{os.path.split(args.config_file_path)[-1]}",
-    )
-
-    print(f"Saving to {CHECKPOINT_DIR}/{full_version}")
+    with open(f"{CHECKPOINT_DIR}/{full_version}/config.yaml", "w") as outfile:
+        yaml.dump(OmegaConf.to_container(config, resolve=True), outfile)
 
     # == Device
-    use_cuda = config["run"]["gpu"] or config["run"]["gpu"] > 1
+    use_cuda = config["gpu"] or config["gpu"] > 1
     device = torch.device("cuda" if use_cuda else "cpu")
     print(
         f"Training on {device}" + f"- {torch.cuda.get_device_name(0)}"
@@ -85,22 +83,23 @@ def train(args):
     )
 
     # == Reproducibility
-    set_seed(config["run"]["seed"])
-    if config["run"]["deterministic"]:
+    set_seed(config["seed"])
+    if config["deterministic"]:
         set_deterministic()
 
-    # *==========================================================================
-    # * Logging & Callbacks
-    # *==========================================================================
     # == Logging
     print(f"\n{timer.time()} | LOGGER SETUP")
     if config["logging"]["logger"].lower() == "tensorboard":
+        # ==== ./checkpoints/data_version/version_number
+
+        print(f"Saving to {CHECKPOINT_DIR}/{full_version}")
+
         # os.path.join(save_dir, name, version)
         logger = TensorBoardLogger(
             save_dir=f"{CHECKPOINT_DIR}",
             name=f"{experiment_dir}",
             version=f"version_{version}",
-            #**config["logging"]["logger_kwargs"],
+            # **config["logging"]["logger_kwargs"],
         )
 
     elif config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
@@ -108,16 +107,18 @@ def train(args):
         logger = WandbLogger(
             project="morphological_tagging",
             save_dir=f"{CHECKPOINT_DIR}/{full_version}",
-            name=f"{experiment_dir}_v{version}",
-            version=version,
+            group=f"{experiment_dir}_v{version}",
+            config=OmegaConf.to_container(config),
             **config["logging"]["logger_kwargs"],
         )
-        logger.experiment.config.update(config, allow_val_change=True)
 
     else:
         raise ConfigurationError("Logger not recognized.")
 
-    # == Callbacks
+    # *==========================================================================
+    # * Callbacks
+    # *==========================================================================
+
     callbacks = []
 
     checkpoint_callback = ModelCheckpoint(
@@ -129,21 +130,20 @@ def train(args):
     )
     callbacks += [checkpoint_callback]
 
-    if config["model"].get("scheduler_name", False):
-        lr_monitor = LearningRateMonitor(logging_interval="step")
-        callbacks += [lr_monitor]
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks += [lr_monitor]
 
     device_monitor = DeviceStatsMonitor()
     callbacks += [device_monitor]
 
-    prog_bar = TQDMProgressBar(refresh_rate=config['run']['prog_bar_refresh_rate'])
+    prog_bar = TQDMProgressBar(refresh_rate=config["prog_bar_refresh_rate"])
     callbacks += [prog_bar]
 
     # *==========================================================================
     # * Dataset
     # *==========================================================================
     print(f"\n{timer.time()} | DATA SETUP")
-    data_module = TreebankDataModule(**config['data'])
+    data_module = TreebankDataModule(**config["data"])
     data_module.prepare_data()
     data_module.setup()
 
@@ -154,12 +154,12 @@ def train(args):
     corpus = data_module.corpus
 
     model = UDIFY(
-        len_char_vocab = len(corpus.char_vocab),
-        idx_char_pad = corpus.char_vocab[corpus.pad_token],
-        idx_token_pad = corpus.token_vocab[corpus.pad_token],
-        n_lemma_scripts = len(corpus.script_counter),
-        n_morph_tags = len(corpus.morph_tag_vocab),
-        n_morph_cats = len(corpus.morph_cat_vocab),
+        len_char_vocab=len(corpus.char_vocab),
+        idx_char_pad=corpus.char_vocab[corpus.pad_token],
+        idx_token_pad=corpus.token_vocab[corpus.pad_token],
+        n_lemma_scripts=len(corpus.script_counter),
+        n_morph_tags=len(corpus.morph_tag_vocab),
+        n_morph_cats=len(corpus.morph_cat_vocab),
         **config["model"],
     )
 
@@ -170,10 +170,12 @@ def train(args):
         logger=logger,
         callbacks=callbacks,
         gpus=1 if use_cuda else 0,
-        deterministic=config["run"]["deterministic"],
-        fast_dev_run=(int(config["run"]["fdev_run"])
-                      if config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"]
-                      else False),
+        deterministic=config["deterministic"],
+        fast_dev_run=(
+            int(config["fdev_run"])
+            if config["fdev_run"] > 0 or config["fdev_run"]
+            else False
+        ),
         weights_summary="top",
         **config["trainer"],
     )
@@ -192,7 +194,7 @@ def train(args):
     # * TESTING #
     # *##########
     print(f"\n{timer.time()} | TESTING")
-    if not (config["run"]["fdev_run"] > 0 or config["run"]["fdev_run"]):
+    if not (config["fdev_run"] > 0 or config["fdev_run"]):
         # If in fastdev mode, won't save a model
         # Would otherwise throw a 'PermissionError: [Errno 13] Permission denied: ...'
 
@@ -213,18 +215,10 @@ def train(args):
 
         return 1
 
+
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-
-    # Model hyperparameters
-    parser.add_argument("--config_file_path", default="./config/udify_mono.yaml", type=str)
-
-    args = parser.parse_args()
-
-    #* WARNINGS FILTER
+    # * WARNINGS FILTER
     #! THESE ARE KNOWN, REDUNDANT WARNINGS
     warnings.filterwarnings("ignore", message=r".*Named tensors.*")
     warnings.filterwarnings(
@@ -233,6 +227,8 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", message=r".*GPU available but not used .*")
     warnings.filterwarnings("ignore", message=r".*shuffle=True")
     warnings.filterwarnings("ignore", message=r".*Trying to infer .*")
-    warnings.filterwarnings("ignore", message=r".*DataModule.setup has already been called.*")
+    warnings.filterwarnings(
+        "ignore", message=r".*DataModule.setup has already been called.*"
+    )
 
-    train(args)
+    train()

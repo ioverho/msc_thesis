@@ -128,3 +128,5 @@ klad.py
 lightning_logs/
 vscode/
 *.env
+/wandb/
+/wandb/*

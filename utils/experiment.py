@@ -1,10 +1,12 @@
 import os
 import re
 import random
+import sys
 from datetime import datetime
 
 import torch
 import numpy as np
+
 
 def find_version(experiment_version: str, checkpoint_dir: str, debug: bool = False):
     """[summary]
@@ -22,7 +24,7 @@ def find_version(experiment_version: str, checkpoint_dir: str, debug: bool = Fal
     version = 0
 
     if debug:
-        version = 'debug'
+        version = "debug"
     else:
         for subdir, dirs, files in os.walk(f"{checkpoint_dir}/{experiment_version}"):
             match = re.search(r".*version_([0-9]+)$", subdir)
@@ -52,16 +54,19 @@ def set_seed(seed):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+
 def set_deterministic():
     """[summary]
     """
     torch.backends.cudnn.determinstic = True
     torch.backends.cudnn.benchmark = False
 
+
 class Timer:
     """[summary]
     """
-    def __init__(self, silent = False):
+
+    def __init__(self, silent=False):
         self.start = datetime.now()
         self.silent = silent
         if not self.silent:
@@ -77,3 +82,37 @@ class Timer:
 
         if not self.silent:
             print(f"Ended at at {end}")
+
+
+def progressbar(it, prefix="", size=60, file=sys.stdout):
+    """A super simple progressbar.
+
+    Args:
+        it ([type]): [description]
+        prefix (str, optional): [description]. Defaults to "".
+        size (int, optional): [description]. Defaults to 60.
+        file ([type], optional): [description]. Defaults to sys.stdout.
+    """
+
+    def get_n(j):
+        return int(size * j / count)
+
+    def show(x, j):
+        file.write(f"{prefix} [{'#' * x}{'.' * (size-x)}] {j:0{n_chars}d}/{count}\r")
+        file.flush()
+
+    count = len(it)
+    cur_n = 0
+    n_chars = len(str(count))
+
+    show(0, 0)
+
+    for i, item in enumerate(it):
+        yield item
+        x = get_n(i + 1)
+        if x != cur_n:
+            show(x, i + 1)
+            cur_n = x
+
+    file.write("\n")
+    file.flush()

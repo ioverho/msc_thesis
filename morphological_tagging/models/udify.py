@@ -1,3 +1,4 @@
+import warnings
 import random
 from typing import Dict, Any, Tuple, Union
 
@@ -38,9 +39,10 @@ class UDIFY(pl.LightningModule):
         transformer_name: str,
         transformer_dropout: float,
         c2w_kwargs: Dict[str, Any],
+        token_embeddings_dropout: float,
+        char_embeddings_dropout: float,
         layer_attn_kwargs: Dict[str, Any],
-        lemma_rnn_kwargs: Dict[str, Any],
-        morph_rnn_kwargs: Dict[str, Any],
+        rnn_kwargs: Dict[str, Any],
         label_smoothing: float,
         mask_p: float,
         transformer_lrs: Dict[int, float],
@@ -54,6 +56,7 @@ class UDIFY(pl.LightningModule):
         n_lemma_scripts: int,
         n_morph_tags: int,
         n_morph_cats: int,
+        unfreeze_transformer_epoch: int,
         ignore_idx: int = -1,
     ) -> None:
         super().__init__()
@@ -68,8 +71,7 @@ class UDIFY(pl.LightningModule):
         self.transformer_dropout = transformer_dropout
         self.c2w_kwargs = c2w_kwargs
         self.layer_attn_kwargs = layer_attn_kwargs
-        self.lemma_rnn_kwargs = lemma_rnn_kwargs
-        self.morph_rnn_kwargs = morph_rnn_kwargs
+        self.rnn_kwargs = rnn_kwargs
         self.label_smoothing = label_smoothing
 
         # Number of classes ====================================================
@@ -86,24 +88,31 @@ class UDIFY(pl.LightningModule):
         self.transformer = AutoModel.from_config(self.config)
         self.tokenizer = AutoTokenizer.from_pretrained(transformer_name, use_fast=True,)
 
+        self.token_embed_dropout = nn.Dropout(p=token_embeddings_dropout)
+
         self.c2w = Char2Word(
             vocab_len=len_char_vocab, padding_idx=idx_char_pad, **c2w_kwargs,
         )
 
+        self.char_embed_dropout = nn.Dropout(p=char_embeddings_dropout)
+
         # Word-level RNNs ======================================================
+
+        self.attend_last_L = layer_attn_kwargs["L"]
+
         self.lemma_layer_attn = LayerAttention(**layer_attn_kwargs)
 
-        self.lemma_lstm = ResidualRNN(**lemma_rnn_kwargs)
+        self.lemma_lstm = ResidualRNN(**rnn_kwargs)
 
         self.morph_layer_attn = LayerAttention(**layer_attn_kwargs)
 
-        self.morph_lstm = ResidualRNN(**morph_rnn_kwargs)
+        self.morph_lstm = ResidualRNN(**rnn_kwargs)
 
         # Lemma classification =================================================
         # self._lemma_in_features = (
         #    self.word_rnn_kwargs["h_dim"] + self.c2w_kwargs["out_dim"]
         # )
-        self._lemma_in_features = lemma_rnn_kwargs["h_dim"]
+        self._lemma_in_features = rnn_kwargs["h_dim"]
 
         self.lemma_clf = nn.Sequential(
             ResidualMLP(
@@ -116,7 +125,7 @@ class UDIFY(pl.LightningModule):
         )
 
         # Morph classification =================================================
-        self._morph_in_features = morph_rnn_kwargs["h_dim"]
+        self._morph_in_features = rnn_kwargs["h_dim"]
 
         self.morph_clf_unf = nn.Sequential(
             ResidualMLP(
@@ -154,6 +163,8 @@ class UDIFY(pl.LightningModule):
         self.n_warmup_steps = n_warmup_steps
         self.optim_kwargs = optim_kwargs
 
+        self.unfreeze_transformer_epoch = unfreeze_transformer_epoch
+
         # ======================================================================
         # Misc (e.g. logging)
         # ======================================================================
@@ -168,17 +179,32 @@ class UDIFY(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        transformer_layers = {
-            l: layer
-            for l, layer in enumerate(self.transformer._modules["transformer"].layer)
-        }
-        transformer_layers["embeddings"] = self.transformer._modules["embeddings"]
+        if self.transformer_type == "distilbert":
+            transformer_layers = {
+                l: layer
+                for l, layer in enumerate(self.transformer._modules["transformer"].layer)
+            }
 
-        lrs = [
+        elif self.transformer_type == "bert":
+            transformer_layers = {
+                l: layer
+                for l, layer in enumerate(self.transformer._modules["encoder"].layer)
+            }
+
+        transformer_lrs = [
             {"params": v.parameters(), "lr": self.transformer_lrs[k]}
             for k, v in transformer_layers.items()
         ]
 
+        transformer_optimizer = AdamW(transformer_lrs, **self.optim_kwargs)
+
+        transformer_scheduler = InvSqrtWithLinearWarmupScheduler(
+            transformer_optimizer,
+            default_lrs=transformer_lrs,
+            n_warmup_steps=self.n_warmup_steps,
+        )
+
+        lrs = []
         lrs.append({"params": self.c2w.parameters(), "lr": self.rnn_lr})
         lrs.append({"params": self.lemma_layer_attn.parameters(), "lr": self.rnn_lr})
         lrs.append({"params": self.lemma_lstm.parameters(), "lr": self.rnn_lr})
@@ -189,20 +215,22 @@ class UDIFY(pl.LightningModule):
         lrs.append({"params": self.morph_clf_unf.parameters(), "lr": self.clf_lr})
         lrs.append({"params": self.morph_clf_fac.parameters(), "lr": self.clf_lr})
 
-        optimizer = AdamW(lrs, **self.optim_kwargs)
+        rest_optimizer = AdamW(lrs, **self.optim_kwargs)
 
-        scheduler = InvSqrtWithLinearWarmupScheduler(
-            optimizer, default_lrs=lrs, n_warmup_steps=self.n_warmup_steps
+        rest_scheduler = InvSqrtWithLinearWarmupScheduler(
+            rest_optimizer, default_lrs=lrs, n_warmup_steps=self.n_warmup_steps
         )
 
-        lr_scheduler_config = {
-            "optimizer": optimizer,
-            "scheduler": scheduler,
-            "interval": "step",
-            "frequency": 1,
-        }
+        return (
+            [transformer_optimizer, rest_optimizer],
+            [
+                {"scheduler": transformer_scheduler, "interval": "step"},
+                {"scheduler": rest_scheduler, "interval": "step"},
+            ],
+        )
 
-        return lr_scheduler_config
+    def lr_scheduler_step(self, scheduler, optimizer_idx, metric):
+        scheduler.step()
 
     def forward(
         self,
@@ -226,7 +254,7 @@ class UDIFY(pl.LightningModule):
         # Encoding
         # ==============================================================================
         if self.mask_p >= 0.0:
-            tokens = [
+            tokens_raw = [
                 [
                     t if random.random() >= self.mask_p else self.tokenizer._mask_token
                     for t in seq
@@ -261,6 +289,8 @@ class UDIFY(pl.LightningModule):
 
         h_bert = torch.stack(bert_output["hidden_states"], dim=2)
 
+        h_bert = self.token_embed_dropout(h_bert)
+
         c2w_embeds_ = self.c2w(chars, char_lens)
 
         seqs = []
@@ -273,10 +303,12 @@ class UDIFY(pl.LightningModule):
             seqs, padding_value=self.idx_token_pad, batch_first=True
         )
 
+        c2w_embeds = self.token_embed_dropout(c2w_embeds)
+
         # ==============================================================================
         # Lemma decoder
         # ==============================================================================
-        h_lemma = self.lemma_layer_attn(h_bert)
+        h_lemma = self.lemma_layer_attn(h_bert[:, :, -self.attend_last_L :, :])
 
         h_lemma_sliced = pad_sequence(
             [h_lemma[i, token_map[i], :] for i in range(batch_size)], batch_first=True
@@ -289,7 +321,7 @@ class UDIFY(pl.LightningModule):
         # ==============================================================================
         # Morph tag decoder
         # ==============================================================================
-        h_morph = self.morph_layer_attn(h_bert)
+        h_morph = self.morph_layer_attn(h_bert[:, :, -self.attend_last_L :, :])
 
         h_morph_sliced = pad_sequence(
             [h_morph[i, token_map[i], :] for i in range(batch_size)], batch_first=True
@@ -387,13 +419,19 @@ class UDIFY(pl.LightningModule):
 
     def clear_metrics(self, split: str):
 
-        self._metrics_dict[split] = {
-            "lemma_acc": RunningStatsBatch(),
-            "lemma_lev_dist": RunningStats(),
-            "morph_tag_acc": RunningStatsBatch(),
-            "morph_set_acc": RunningStatsBatch(),
-            "morph_f1": RunningF1(),
-        }
+        if split in self._metrics_dict.keys():
+            self._metrics_dict[split] = {
+                "lemma_acc": RunningStatsBatch(),
+                "lemma_lev_dist": RunningStats(),
+                "morph_tag_acc": RunningStatsBatch(),
+                "morph_set_acc": RunningStatsBatch(),
+                "morph_f1": RunningF1(),
+            }
+
+        else:
+            warnings.warn(
+                f"{split} is not in the metrics_dict keys. Metrics are not cleared currently."
+            )
 
     @torch.no_grad()
     def metrics(
@@ -487,12 +525,14 @@ class UDIFY(pl.LightningModule):
         self.log_dict(metrics_dict)
         # return metrics_dict
 
-    def training_step(self, batch, batch_idx):
+    def on_train_epoch_start(self):
+        transformer_scheduler = self.lr_schedulers()[0]
+        if self.current_epoch < self.unfreeze_transformer_epoch:
+            transformer_scheduler.freeze()
+        else:
+            transformer_scheduler.thaw()
 
-        # For the first epoch, the transformer is not trained
-        if self.current_epoch == 0:
-            for p in self.transformer.parameters():
-                p.requires_grad = False
+    def training_step(self, batch, batch_idx, optimizer_idx):
 
         (
             char_lens,
@@ -520,9 +560,7 @@ class UDIFY(pl.LightningModule):
         )
 
         self.log_dict(
-            {f"train_{k}_loss": v for k, v in losses.items()},
-            on_step=True,
-            prog_bar=True,
+            {f"train_{k}_loss": v for k, v in losses.items()}, prog_bar=True,
         )
         self.metrics("train", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
@@ -559,11 +597,7 @@ class UDIFY(pl.LightningModule):
             morph_cats,
         )
 
-        self.log_dict(
-            {f"valid_{k}_loss": v for k, v in losses.items()},
-            on_step=True,
-            prog_bar=True,
-        )
+        self.log_dict({f"valid_{k}_loss": v for k, v in losses.items()})
         self.metrics("valid", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss
@@ -599,11 +633,7 @@ class UDIFY(pl.LightningModule):
             morph_cats,
         )
 
-        self.log_dict(
-            {f"test_{k}_loss": v for k, v in losses.items()},
-            on_step=True,
-            prog_bar=True,
-        )
+        self.log_dict({f"test_{k}_loss": v for k, v in losses.items()})
         self.metrics("test", lemma_logits, lemma_tags, morph_logits, morph_tags)
 
         return loss

@@ -1,0 +1,41 @@
+defaults:
+  - data: default
+  - model: udify_bert
+  - _self_
+
+data:
+  batch_first: True
+
+experiment_name: UDIFY_mono
+
+print_hparams: False
+
+seed: 610
+
+gpu: 1
+deterministic: False
+debug: False
+fdev_run: False
+prog_bar_refresh_rate: 100
+
+trainer:
+  gradient_clip_val: 2
+  max_epochs: 50
+  precision: 16
+  num_sanity_val_steps: 0
+
+logging:
+  logger: wandb
+  logger_kwargs:
+    log_model: True
+    offline: False
+  monitor: valid_total_loss
+  monitor_mode: "min"
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .
