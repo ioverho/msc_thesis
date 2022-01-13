@@ -137,6 +137,8 @@ class Char2Word(nn.Module):
 
         c_embeds = self.embed(chars)
 
+        c_embeds = self.embed_dropout(c_embeds)
+
         packed_c_embeds = pack_padded_sequence(
             c_embeds, char_lens, enforce_sorted=False
         )
@@ -162,11 +164,11 @@ class LayerAttention(nn.Module):
 
     Args:
         L (int): number of layers to attend over
-        u (float, optional): range for initiliazation. Defaults to 3.
+        u (float, optional): range for initiliazation. Defaults to 0.2.
         dropout (float, optional): probability of dropout. Defaults to 0.0.
     """
 
-    def __init__(self, L: int, u: float = 2, dropout: float = 0.0) -> None:
+    def __init__(self, L: int, u: float = 0.2, dropout: float = 0.0) -> None:
         super().__init__()
 
         self.L = L
@@ -189,7 +191,7 @@ class LayerAttention(nn.Module):
                 of a transformer. Assumed shape of [_,_,L,_].
         """
 
-        if self.dropout > 0.0:
+        if self.dropout > 0.0 and self.training:
             # Layer dropout
             alpha = torch.softmax(
                 torch.where(

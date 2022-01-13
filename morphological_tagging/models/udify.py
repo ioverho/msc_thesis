@@ -253,7 +253,7 @@ class UDIFY(pl.LightningModule):
         # ==============================================================================
         # Encoding
         # ==============================================================================
-        if self.mask_p >= 0.0:
+        if self.mask_p >= 0.0 and self.training:
             tokens_raw = [
                 [
                     t if random.random() >= self.mask_p else self.tokenizer._mask_token
