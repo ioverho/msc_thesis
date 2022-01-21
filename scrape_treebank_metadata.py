@@ -72,5 +72,5 @@ if "__name__" == "__main__":
 
     treebank_metadata = scrape()
 
-    with open("./morphological_tagging/data/treebank_metadata.json", "w") as outfile:
+    with open("./morphological_tagging/data/treebank_metadata.yaml", "w") as outfile:
         yaml.dump(treebank_metadata, outfile, default_flow_style=False)

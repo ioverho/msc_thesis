@@ -869,17 +869,13 @@ class TreebankDataModule(pl.LightningDataModule):
         return test_loader
 
     def save(self, fp):
-        with open(
-            "./morphological_tagging/data/test_multilingual_dataset.pickle", "wb"
-        ) as fp:
+        with open(fp, "wb") as fp:
             pickle.dump(self, fp)
 
     @classmethod
     def load(cls, fp):
 
-        with open(
-            "./morphological_tagging/data/test_multilingual_dataset.pickle", "rb"
-        ) as fp:
+        with open(fp, "rb") as fp:
             return pickle.load(fp)
 
 
