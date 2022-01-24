@@ -19,6 +19,7 @@ def build(config: DictConfig):
         treebank_name=config["treebank_name"],
         batch_first=config["batch_first"],
         remove_unique_lemma_scripts=config["remove_unique_lemma_scripts"],
+        include_family=config["include_family"],
         quality_limit=config["quality_limit"],
         return_tokens_raw=config["return_tokens_raw"],
         len_sorted=config["len_sorted"],
@@ -30,7 +31,18 @@ def build(config: DictConfig):
     data_module.prepare_data()
     data_module.setup()
 
-    output_path = os.path.join(os.getcwd(), CHECKPOINT_DIR, config["file_name"])
+    if config["file_name"] is None:
+        n_langs = len(data_module._included_languages)
+        lang_id = config["language"] if n_langs == 1 else f"multi_{n_langs}"
+
+        output_path = os.path.join(
+            os.getcwd(),
+            CHECKPOINT_DIR,
+            f"{lang_id}_{config['treebank_name']}_{config['quality_limit']}_{config['batch_first']}.pickle",
+        )
+    else:
+        output_path = os.path.join(os.getcwd(), CHECKPOINT_DIR, config["file_name"])
+
     print(f"Saving to: {output_path}")
     data_module.save(output_path)
 

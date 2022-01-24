@@ -10,6 +10,7 @@ from itertools import product
 from typing import Optional, List, Tuple, Dict, Union
 import pickle
 
+import omegaconf
 import conllu
 from conllu import parse_incr
 import pytorch_lightning as pl
@@ -29,6 +30,14 @@ BASEPATH = "./morphological_tagging/data/sigmorphon_2019/task2"
 
 ALL_TAGS_FP = "./morphological_tagging/data/uni_morph_tags.json"
 
+with open("./morphological_tagging/data/treebank_metadata.json") as f:
+    TREEBANK_METADATA = json.load(f)
+
+with open("./morphological_tagging/data/family_to_language.json") as f:
+    FAMILY_TO_LANGUAGE = json.load(f)
+
+with open("./morphological_tagging/data/language_to_family.json") as f:
+    LANGUAGE_TO_FAMILY = json.load(f)
 
 def get_conllu_files(language: str, name: str = "merge") -> Union[dict[list], list]:
     """Get the UD/CONLLU/SIGMORPHON treebanks from the BASEPATH dir.
@@ -187,6 +196,7 @@ class Document:
             return self._pretrained_embeddings
         else:
             return 0
+
 
 @dataclass
 class DocumentCorpus(Dataset):
@@ -729,7 +739,8 @@ class TreebankDataModule(pl.LightningDataModule):
         max_tokens: int = 256,
         max_chars: int = 2048,
         remove_duplicates: bool = True,
-        remove_unique_lemma_scripts: bool = True,
+        remove_unique_lemma_scripts: bool = False,
+        include_family: bool = False,
         quality_limit: float = 0.0,
     ):
         super().__init__()
@@ -738,7 +749,15 @@ class TreebankDataModule(pl.LightningDataModule):
         # if (language is None) or (sorted is None) and :
         #    raise ConfigurationError
 
-        self.language = language
+        if isinstance(language, str):
+            self.language = [language]
+        elif isinstance(language, list) or isinstance(
+            language, omegaconf.listconfig.ListConfig
+        ):
+            self.language = [*language]
+        else:
+            raise ValueError(f"{type(language)} is not supported input for language.")
+
         self.treebank_name = treebank_name
         self.batch_first = batch_first
         self.len_sorted = len_sorted
@@ -750,25 +769,46 @@ class TreebankDataModule(pl.LightningDataModule):
         self.remove_duplicates = remove_duplicates
         self.remove_unique_lemma_scripts = remove_unique_lemma_scripts
         self.batch_size = batch_size
+        self.include_family = include_family
         self.quality_limit = quality_limit
 
     def prepare_data(self) -> None:
 
         print("FINDING CONNLU FILES")
-        if isinstance(self.language, str):
-            files = get_conllu_files(language=self.language, name=self.treebank_name)
 
-        elif isinstance(self.language, list):
-            files = [
-                get_conllu_files(lang, name=self.treebank_name)
-                for lang in self.language
+        if self.include_family:
+            print("Extending with linguistic family.")
+
+            included_families = {LANGUAGE_TO_FAMILY[lang] for lang in self.language}
+
+            extended_languages = [
+                lang
+                for family in included_families
+                for lang in FAMILY_TO_LANGUAGE[family]
             ]
-            files = [item for sublist in files for item in sublist]
+
+            files = [
+                f
+                for lang in extended_languages
+                for f in get_conllu_files(lang, name=self.treebank_name)
+            ]
+
+            self._included_languages = extended_languages
+
+            print(
+                f"Languages included: {len(self.language)}->{len(self._included_languages)}"
+            )
+
+        else:
+            files = [
+                f
+                for lang in self.language
+                for f in get_conllu_files(lang, name=self.treebank_name)
+            ]
+
+            self._included_languages = self.language
 
         if self.quality_limit > 0.0:
-            with open("./morphological_tagging/data/treebank_metadata.yaml", "rb") as f:
-                treebank_metadata = yaml.safe_load(f)
-
             filtered_files = []
 
             quality_limit = 0.2
@@ -779,7 +819,7 @@ class TreebankDataModule(pl.LightningDataModule):
 
                 _, tb, _, lang = f
 
-                tb_metadata = treebank_metadata[f"{lang}_{tb}"]
+                tb_metadata = TREEBANK_METADATA[f"{lang}_{tb}"]
 
                 if tb_metadata["quality"] > quality_limit:
                     filtered_files.append(f)
@@ -806,7 +846,7 @@ class TreebankDataModule(pl.LightningDataModule):
 
             files = filtered_files
 
-        print()
+        print("BUILDING CORPUS")
         self.corpus = DocumentCorpus(
             batch_first=self.batch_first,
             sorted=self.len_sorted,
@@ -838,32 +878,44 @@ class TreebankDataModule(pl.LightningDataModule):
         if stage in (None, "test"):
             self.test_corpus = Subset(self.corpus, self.corpus.splits["test"])
 
-    def train_dataloader(self):
+    def train_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
+        if batch_size is None:
+            batch_size = self.batch_size
+
         train_loader = DataLoader(
             self.train_corpus,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=False if self.len_sorted else True,
             collate_fn=self.corpus.collate_batch,
+            **dataloader_kwargs,
         )
 
         return train_loader
 
-    def val_dataloader(self):
+    def val_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
+        if batch_size is None:
+            batch_size = self.batch_size
+
         val_loader = DataLoader(
             self.valid_corpus,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=False,
             collate_fn=self.corpus.collate_batch,
+            **dataloader_kwargs,
         )
 
         return val_loader
 
-    def test_dataloader(self):
+    def test_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
+        if batch_size is None:
+            batch_size = self.batch_size
+
         test_loader = DataLoader(
             self.test_corpus,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=False,
             collate_fn=self.corpus.collate_batch,
+            **dataloader_kwargs,
         )
 
         return test_loader

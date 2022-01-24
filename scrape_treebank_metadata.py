@@ -1,8 +1,10 @@
-import yaml
+import os
+import json
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import re
+from collections import defaultdict
 
 from bs4 import BeautifulSoup, Comment, Tag
 
@@ -27,7 +29,10 @@ def scrape():
     comments = soup.find_all(string=lambda text: isinstance(text, Comment))
 
     treebank_metadata = {}
+    language_to_family = {}
     for c in comments:
+
+        # Get matadata for specific treebanks (size, quality)
         matches = re.search(r"(?<=start of )(.*) \/ (.*)(?= entry)", c.string)
         if matches is not None:
             language, treebank = matches.group(1), matches.group(2)
@@ -61,16 +66,39 @@ def scrape():
                 "license": meta_data[3],
             }
 
+        # Get metadata on languages and their families
+        matches = re.search("(?<=start of )(.*)(?= accordion row)", c.string)
+        if matches is not None:
+            language = matches.group(1)
+            typological_information = c.parent.contents[-2].contents[0]
+
+            language_to_family[language] = typological_information
+
+    # Hardcoded name changes
     treebank_metadata["French_Spoken"] = treebank_metadata["French_Rhapsodie"]
     del treebank_metadata["French_Rhapsodie"]
 
     treebank_metadata["Polish_SZ"] = treebank_metadata["Polish_PDB"]
     del treebank_metadata["Polish_PDB"]
 
+    # Add inverse language to lingusitic-family mapping
+    family_to_language = defaultdict(list)
+    for k, v in language_to_family.items():
+        family_to_language[v].append(k)
+    family_to_language = dict(family_to_language)
 
-if "__name__" == "__main__":
+    return treebank_metadata, language_to_family, family_to_language
 
-    treebank_metadata = scrape()
 
-    with open("./morphological_tagging/data/treebank_metadata.yaml", "w") as outfile:
-        yaml.dump(treebank_metadata, outfile, default_flow_style=False)
+if __name__ == "__main__":
+
+    treebank_metadata, language_to_family, family_to_language = scrape()
+
+    with open("./morphological_tagging/data/treebank_metadata.json", "w") as f1:
+        json.dump(treebank_metadata, f1)
+
+    with open("./morphological_tagging/data/language_to_family.json", "w") as f2:
+        json.dump(language_to_family, f2)
+
+    with open("./morphological_tagging/data/family_to_language.json", "w") as f3:
+        json.dump(family_to_language, f3)

@@ -1,10 +1,18 @@
-file_name: "test.pickle"
-
 batch_size: 32
-language: English
+language:
+  - English
+  - Arabic
+  - Czech
+  - Finnish
+  - French
+  - Russian
+  - Turkish
 treebank_name: merge
 batch_first: True
 quality_limit: 0.2
+include_family: True
+
+file_name: null
 
 # These are pretty much default values
 len_sorted: True
