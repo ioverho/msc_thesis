@@ -2,7 +2,7 @@ import os
 import csv
 import re
 import json
-import yaml
+from pathlib import Path
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -39,39 +39,40 @@ with open("./morphological_tagging/data/family_to_language.json") as f:
 with open("./morphological_tagging/data/language_to_family.json") as f:
     LANGUAGE_TO_FAMILY = json.load(f)
 
-def get_conllu_files(language: str, name: str = "merge") -> Union[dict[list], list]:
+
+def get_conllu_files(
+    language: str, name: str = "merge", source: str = None
+) -> Union[dict[list], list]:
     """Get the UD/CONLLU/SIGMORPHON treebanks from the BASEPATH dir.
+    Only gets the `.conllu files` and returns absolute paths.
 
     Args:
         language (str): the desired language, or all for all languages in the directory
         name (str): the desired treebank name, or merge for all. Default to "merge"
 
     Returns:
-        Union[dict[list], list]: a dict, with as keys the data split and as values a list with filepaths.
-            If `splits` is False, then return a list.
+        List[Tuple[str, str, str, str]]: a list of tuples containing, in order, the absolute file path,
+        the treebank's name, the split (train/dev/test) and the language
     """
 
-    files = defaultdict(list)
-    for (dirpath, _, filenames) in os.walk(BASEPATH):
-        if len(filenames) == 0:
-            continue
+    if source is None:
+        source = BASEPATH
 
-        treebank = os.path.split(dirpath)[-1]
-        _, treebank = re.split(r"_", treebank, maxsplit=1)
-        t_lang, t_name = re.split(r"-", treebank, maxsplit=1)
+    files = []
+    for f in Path(source).glob("**/*.conllu"):
+        t_lang, t_name = f.parent.stem[3:].split("-", maxsplit=1)
 
-        if (t_lang.lower() == language.lower() or language.lower() == "all") and (
-            name.lower() == t_name.lower() or name.lower() == "merge"
-        ):
-            for f in filenames:
-                if "covered" in f:
-                    continue
+        if (
+            # check for language match
+            (t_lang.lower() == language.lower() or language.lower() == "all") and
+            # check for treebank name match
+            (name.lower() == t_name.lower() or name.lower() == "merge") and
+            # check if file is not "covered" (features removed for test set)
+            ("covered" not in f.parts[-1])
+            ):
+            split = f.stem.split("-")[-1]
 
-                split = f.rsplit("-")[-1].rsplit(".")[0]
-                files[split].append((os.path.join(dirpath, f), t_name, split, t_lang))
-
-    files = dict(files)
-    files = [item for sublist in list(files.values()) for item in sublist]
+            files.append((str(f.absolute()), t_name, split, t_lang))
 
     return files
 
@@ -742,6 +743,7 @@ class TreebankDataModule(pl.LightningDataModule):
         remove_unique_lemma_scripts: bool = False,
         include_family: bool = False,
         quality_limit: float = 0.0,
+        source: Optional[str] = None,
     ):
         super().__init__()
 
@@ -771,6 +773,7 @@ class TreebankDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.include_family = include_family
         self.quality_limit = quality_limit
+        self.source = source
 
     def prepare_data(self) -> None:
 
@@ -790,7 +793,9 @@ class TreebankDataModule(pl.LightningDataModule):
             files = [
                 f
                 for lang in extended_languages
-                for f in get_conllu_files(lang, name=self.treebank_name)
+                for f in get_conllu_files(
+                    lang, name=self.treebank_name, source=self.source
+                )
             ]
 
             self._included_languages = extended_languages
@@ -803,7 +808,9 @@ class TreebankDataModule(pl.LightningDataModule):
             files = [
                 f
                 for lang in self.language
-                for f in get_conllu_files(lang, name=self.treebank_name)
+                for f in get_conllu_files(
+                    lang, name=self.treebank_name, source=self.source
+                )
             ]
 
             self._included_languages = self.language
@@ -846,7 +853,6 @@ class TreebankDataModule(pl.LightningDataModule):
 
             files = filtered_files
 
-        print("BUILDING CORPUS")
         self.corpus = DocumentCorpus(
             batch_first=self.batch_first,
             sorted=self.len_sorted,
