@@ -64,15 +64,20 @@ def get_conllu_files(
 
         if (
             # check for language match
-            (t_lang.lower() == language.lower() or language.lower() == "all") and
+            (t_lang.lower() == language.lower() or language.lower() == "all")
+            and
             # check for treebank name match
-            (name.lower() == t_name.lower() or name.lower() == "merge") and
+            (name.lower() == t_name.lower() or name.lower() == "merge")
+            and
             # check if file is not "covered" (features removed for test set)
             ("covered" not in f.parts[-1])
-            ):
+        ):
             split = f.stem.split("-")[-1]
 
             files.append((str(f.absolute()), t_name, split, t_lang))
+
+    if len(files) == 0:
+        print(f"No files found for {language}_{name} in {source}.")
 
     return files
 
@@ -742,6 +747,7 @@ class TreebankDataModule(pl.LightningDataModule):
         remove_duplicates: bool = True,
         remove_unique_lemma_scripts: bool = False,
         include_family: bool = False,
+        family_level: str = "sibling",
         quality_limit: float = 0.0,
         source: Optional[str] = None,
     ):
@@ -772,17 +778,30 @@ class TreebankDataModule(pl.LightningDataModule):
         self.remove_unique_lemma_scripts = remove_unique_lemma_scripts
         self.batch_size = batch_size
         self.include_family = include_family
+        self.family_level = family_level
         self.quality_limit = quality_limit
-        self.source = source
+        self.source = source if isinstance(source, str) else BASEPATH
 
     def prepare_data(self) -> None:
 
         print("FINDING CONNLU FILES")
+        print(f"Looking at:\n\t{Path(self.source).absolute()}")
 
         if self.include_family:
             print("Extending with linguistic family.")
 
             included_families = {LANGUAGE_TO_FAMILY[lang] for lang in self.language}
+
+            if "parent" in self.family_level.lower():
+                # If include families is set to the parent level, includes all sub-types of the typological family
+                # For example, if Finnish is an included language, which if of type (Uralic, Finnic)
+                # Hungarian, of type (Uralic, Hungarian) is also included
+                included_families = [
+                    k
+                    for fam in included_families
+                    for k in FAMILY_TO_LANGUAGE.keys()
+                    if fam.split(", ")[0] in k
+                ]
 
             extended_languages = [
                 lang

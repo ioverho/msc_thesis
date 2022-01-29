@@ -13,6 +13,13 @@ def build(config: DictConfig):
     """Builds a treebank data module from provide parameters, and saves to disk
     """
 
+    print(f"Language: {config['language']}")
+    print(f"Treebanks: {config['treebank_name']}")
+    print(f"Include linguistic family: {config['include_family']}")
+    print(f"Family level: {config['family_level']}")
+    print(f"Quality limit: {config['quality_limit']}")
+    print(f"Batch first: {config['batch_first']}\n")
+
     data_module = TreebankDataModule(
         batch_size=config["batch_size"],
         language=config["language"],
@@ -20,12 +27,14 @@ def build(config: DictConfig):
         batch_first=config["batch_first"],
         remove_unique_lemma_scripts=config["remove_unique_lemma_scripts"],
         include_family=config["include_family"],
+        family_level=config["family_level"],
         quality_limit=config["quality_limit"],
         return_tokens_raw=config["return_tokens_raw"],
         len_sorted=config["len_sorted"],
         max_chars=config["max_chars"],
         max_tokens=config["max_tokens"],
         remove_duplicates=config["remove_duplicates"],
+        source=config["source"],
     )
 
     data_module.prepare_data()
@@ -40,6 +49,7 @@ def build(config: DictConfig):
             CHECKPOINT_DIR,
             f"{lang_id}_{config['treebank_name']}_{config['quality_limit']}_{config['batch_first']}.pickle",
         )
+
     else:
         output_path = os.path.join(os.getcwd(), CHECKPOINT_DIR, config["file_name"])
 

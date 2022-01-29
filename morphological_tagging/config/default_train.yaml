@@ -1,0 +1,20 @@
+print_hparams: False
+prog_bar_refresh_rate: 100
+
+monitor: valid/loss/total
+monitor_mode: "min"
+
+logging:
+  logger: wandb
+  logger_kwargs:
+    project: morphological_tagging_v2
+    log_model: True
+    offline: False
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .

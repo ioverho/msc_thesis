@@ -27,3 +27,5 @@ optim_kwargs:
     - 0.99
   weight_decay: 1.0e-2
 unfreeze_transformer_epoch: 1
+layer_attn_kwargs:
+  dropout: 0.2

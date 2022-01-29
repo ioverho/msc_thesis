@@ -20,4 +20,3 @@ transformer_lrs:
   11: 5.0e-5
 layer_attn_kwargs:
   L: 12
-  dropout: 0.2

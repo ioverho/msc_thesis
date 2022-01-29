@@ -10,8 +10,13 @@ language:
 treebank_name: merge
 batch_first: True
 quality_limit: 0.2
-include_family: True
+include_family: False
+family_level: "sibling"
+source: "./morphological_tagging/data/um-treebanks-v2.9"
 
+# Naming convention
+# Is automatically handled if None is supplied
+#file_name: "Afro-Asiatic_${treebank_name}_${quality_limit}_${batch_first}.pickle"
 file_name: null
 
 # These are pretty much default values

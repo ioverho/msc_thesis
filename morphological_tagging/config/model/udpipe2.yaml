@@ -4,6 +4,8 @@ c2w_kwargs:
   out_dim: 256
   bidirectional: True
   rnn_type: gru
+  batch_first: False
+  dropout: 0.5
 w_embedding_dim: 512
 word_rnn_kwargs:
   h_dim: 512
@@ -11,6 +13,8 @@ word_rnn_kwargs:
   rnn_type: lstm
   num_layers: 3
   residual: True
+  batch_first: False
+  dropout: 0.5
 token_mask_p: 0.2
 label_smoothing: 0.03
 reg_loss_weight: 1
@@ -18,7 +22,7 @@ lr: 1.0e-3
 betas:
   - 0.9
   - 0.99
-weight_decay: 0.0
+weight_decay: 1.0e-2
 scheduler_name: Step
 scheduler_kwargs:
   milestones:

@@ -1,5 +1,4 @@
 import os
-import argparse
 import warnings
 import yaml
 
@@ -19,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 
 # User-defined
 from morphological_tagging.data.corpus import TreebankDataModule
-from morphological_tagging.models.udify import UDIFY
+from morphological_tagging.models2 import UDPipe2, UDIFY
 from utils.experiment import find_version, set_seed, set_deterministic, Timer
 from utils.errors import ConfigurationError
 
@@ -31,9 +30,7 @@ os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
-@hydra.main(
-    config_path="./morphological_tagging/config", config_name="udify_experiment"
-)
+@hydra.main(config_path="./morphological_tagging/config")
 def train(config: DictConfig):
     """Train loop.
 
@@ -102,9 +99,8 @@ def train(config: DictConfig):
     elif config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
 
         logger = WandbLogger(
-            project="morphological_tagging",
             save_dir=f"{CHECKPOINT_DIR}/{full_version}",
-            group=f"{experiment_dir}_v{version}",
+            group=config["experiment_name"],
             config=OmegaConf.to_container(config),
             **config["logging"]["logger_kwargs"],
         )
@@ -120,8 +116,8 @@ def train(config: DictConfig):
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{CHECKPOINT_DIR}/{full_version}/checkpoints",
-        monitor=config["logging"]["monitor"],
-        mode=config["logging"]["monitor_mode"],
+        monitor=config["monitor"],
+        mode=config["monitor_mode"],
         auto_insert_metric_name=True,
         save_last=True,
     )
@@ -140,25 +136,56 @@ def train(config: DictConfig):
     # * Dataset
     # *==========================================================================
     print(f"\n{timer.time()} | DATA SETUP")
-    data_module = TreebankDataModule(**config["data"])
-    data_module.prepare_data()
-    data_module.setup()
+    if config["data"].get("file_path", None) is None:
+        data_module = TreebankDataModule(**config["data"])
+        data_module.prepare_data()
+        data_module.setup()
+    elif os.path.exists(config["data"]["file_path"]):
+        print(f"Loading pre-defined data module from {config['data']['file_path']}")
+        data_module = TreebankDataModule.load(config["data"]["file_path"])
+        data_module.batch_size = config["data"]["batch_size"]
+        print(data_module.corpus)
+
+    else:
+        raise ConfigurationError("Filepath not recognized.")
+
+    corpus = data_module.corpus
+    print(f"N lemma scripts: {len(corpus.script_counter)}")
+    print(f"N morph tags: {len(corpus.morph_tag_vocab) - 1}")
+    print(f"N morph cats: {len(corpus.morph_cat_vocab)}")
 
     # *==========================================================================
     # * Model
     # *==========================================================================
     print(f"\n{timer.time()} | MODEL SETUP")
-    corpus = data_module.corpus
 
-    model = UDIFY(
-        len_char_vocab=len(corpus.char_vocab),
-        idx_char_pad=corpus.char_vocab[corpus.pad_token],
-        idx_token_pad=corpus.token_vocab[corpus.pad_token],
-        n_lemma_scripts=len(corpus.script_counter),
-        n_morph_tags=len(corpus.morph_tag_vocab),
-        n_morph_cats=len(corpus.morph_cat_vocab),
-        **config["model"],
-    )
+    if config["architecture"].lower() == "udpipe2":
+        model = UDPipe2(
+            char_vocab=corpus.char_vocab,
+            token_vocab=corpus.token_vocab,
+            unk_token=corpus.unk_token,
+            pad_token=corpus.pad_token,
+            pretrained_embedding_dim=corpus.pretrained_embeddings_dim,
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab) - 1,
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            preprocessor_kwargs=config.preprocessor,
+            **config["model"],
+        )
+
+    elif config["architecture"].lower() == "udify":
+        model = UDIFY(
+            len_char_vocab=len(corpus.char_vocab),
+            idx_char_pad=corpus.char_vocab[corpus.pad_token],
+            idx_token_pad=corpus.token_vocab[corpus.pad_token],
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab),
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            **config["model"],
+        )
+
+    else:
+        raise NotImplementedError("Have not implemented other architeactures yet.")
 
     # *==========================================================================
     # * Train

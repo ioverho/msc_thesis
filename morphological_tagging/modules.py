@@ -150,6 +150,8 @@ class Char2Word(nn.Module):
         h_T_out = h_T_out.view(-1, (2 if self.bidirectional else 1) * self.h_dim)
 
         if self.out_dim > 0:
+            h_T_out = self.rnn_dropout(h_T_out)
+
             c2w_embeds = self.out_project(h_T_out)
 
             return c2w_embeds
@@ -225,6 +227,7 @@ class ResidualMLP(nn.Module):
         h = h + x
 
         return h
+
 
 class MultiHeadSequenceAttention(nn.Module):
     """Multihead variant of scaled-dot product attention for sequence summarization.

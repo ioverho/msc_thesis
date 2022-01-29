@@ -76,10 +76,8 @@ def scrape():
 
     # Hardcoded name changes
     treebank_metadata["French_Spoken"] = treebank_metadata["French_Rhapsodie"]
-    del treebank_metadata["French_Rhapsodie"]
 
     treebank_metadata["Polish_SZ"] = treebank_metadata["Polish_PDB"]
-    del treebank_metadata["Polish_PDB"]
 
     # Add inverse language to lingusitic-family mapping
     family_to_language = defaultdict(list)
