@@ -34,7 +34,9 @@ class FastText(Vectors):
         if len(language) > 2:
             language = FASTTEXT_LANG_CONVERSION.get(language)
             if language is None:
-                raise ConfigurationError(f"Language acronym '{language}' not recognized.")
+                raise ConfigurationError(
+                    f"Language acronym '{language}' not recognized."
+                )
 
         url = self.url_base.format(language)
         name = os.path.basename(url)
@@ -74,6 +76,9 @@ class UDPipe2PreProcessor(nn.Module):
         n_layers_pooling: int = 4,
         wordpiece_pooling: str = "first",
     ) -> None:
+
+        raise NotImplementedError("DEPRECATED. REMOVE.")
+
         super().__init__()
 
         self.word_embeddings = word_embeddings

@@ -1,10 +1,10 @@
 defaults:
   - default_train
-  - model: udify_bert
+  - model: dogtag
   - _self_
 
-experiment_name: UDIFY_mono
-architecture: udify
+experiment_name: DogTag_mono
+architecture: dogtag
 
 seed: 610
 gpu: 1

@@ -1,0 +1,15 @@
+dataset_name: Finnish_merge
+model_name: UDPipe2
+mode: last
+quality_limit: 0.2
+batch_first: False
+overwrite_ok: True
+gpu: 1
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .

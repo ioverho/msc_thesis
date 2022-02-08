@@ -1,10 +1,25 @@
 defaults:
   - default_train
-  - model: udify_bert
   - _self_
 
-experiment_name: UDIFY_mono
-architecture: udify
+experiment_name: UDIFY_finetune
+architecture: UDIFY_finetune
+
+seed: 610
+gpu: 1
+deterministic: False
+debug: False
+fdev_run: False
+
+model:
+  clf_lr: 4.0e-3
+  rnn_lr: 1.0e-3
+  optim_kwargs:
+    betas:
+      - 0.9
+      - 0.99
+    weight_decay: 1.0e-2
+  n_warmup_steps: 0.04
 
 data:
   language: English

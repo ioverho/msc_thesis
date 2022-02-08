@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Callable, Union, List
 
 import torch
@@ -61,6 +62,7 @@ class UDPipe2PreProcessor(nn.Module):
         cache_location (str, optional): [description]. Defaults to "./morphological_tagging/data/pretrained_vectors".
         lower_case_backup (bool, optional): [description]. Defaults to False.
         transformer_name (str, optional): [description]. Defaults to "distilbert-base-multilingual-cased".
+        transformer_dropout (float, optional): overwrites the transformer's various dropout layers. Defaults to pretrained value.
         layer_pooling (str, optional): [description]. Defaults to "average".
         n_layers_pooling (int, optional): [description]. Defaults to 4.
         wordpiece_pooling (str, optional): [description]. Defaults to "first".
@@ -75,6 +77,7 @@ class UDPipe2PreProcessor(nn.Module):
         cache_location: str = "./morphological_tagging/data/pretrained_vectors",
         lower_case_backup: bool = False,
         transformer_name: str = "distilbert-base-multilingual-cased",
+        transformer_dropout: float = None,
         layer_pooling: str = "average",
         n_layers_pooling: int = 4,
         wordpiece_pooling: str = "first",
@@ -88,6 +91,7 @@ class UDPipe2PreProcessor(nn.Module):
         self.cache_location = cache_location
         self.lower_case_backup = lower_case_backup
         self.transformer_name = transformer_name
+        self.transformer_dropout = transformer_dropout
         self.layer_pooling = layer_pooling
         self.n_layers_pooling = n_layers_pooling
         self.wordpiece_pooling = wordpiece_pooling
@@ -104,6 +108,18 @@ class UDPipe2PreProcessor(nn.Module):
 
         if self.context_embeddings:
             self.config = AutoConfig.from_pretrained(self.transformer_name)
+
+            # Change all dropout parameters, regardless of model's naming convention
+            if self.transformer_dropout is not None:
+                dropouts = dict()
+                for k, v in self.config.__dict__.items():
+                    if "dropout" in k and isinstance(v, float):
+                        dropouts[k] = self.transformer_dropout
+                self.config.__dict__.update(dropouts)
+
+            # Quick check if dimensionality is known
+            self.dim
+
             self.transformer_tokenizer = AutoTokenizer.from_pretrained(
                 self.transformer_name, use_fast=True
             )
@@ -120,6 +136,10 @@ class UDPipe2PreProcessor(nn.Module):
         self.freeze_and_eval()
 
     @property
+    def device(self):
+        return self.dummy_parameter.device
+
+    @property
     def dim(self):
         dim = 0
 
@@ -127,9 +147,31 @@ class UDPipe2PreProcessor(nn.Module):
             dim += self.vecs.dim
 
         if self.context_embeddings:
-            dim += self.config.dim
+
+            if re.search(r"^(distilbert)-", self.transformer_name) is not None:
+                dim += self.config.dim
+
+            elif re.search(r"^(bert)-", self.transformer_name) is not None:
+                dim += self.config.hidden_size
+
+            elif re.search(r"-(roberta)-", self.transformer_name) is not None:
+                dim += self.config.hidden_size
+
+            else:
+                raise ConfigurationError(
+                    "Preprocessor does not know how to get the transformer hidden dimensionality"
+                    + " for a model of type {self.transformer_name}."
+                )
 
         return dim
+
+    def train(self):
+        if self.context_embeddings:
+            self.transformer.train()
+
+    def eval(self):
+        if self.context_embeddings:
+            self.transformer.eval()
 
     def freeze_and_eval(self):
 
@@ -273,7 +315,3 @@ class UDPipe2PreProcessor(nn.Module):
             return None
 
         return embeddings
-
-    @property
-    def device(self):
-        return next(self.parameters()).device

@@ -18,7 +18,14 @@ from omegaconf import DictConfig, OmegaConf
 
 # User-defined
 from morphological_tagging.data.corpus import TreebankDataModule
-from morphological_tagging.models2 import UDPipe2, UDIFY
+from morphological_tagging.models2 import (
+    UDIFYFineTune,
+    UDPipe2,
+    UDIFY,
+    UDIFYFineTune,
+    DogTag,
+    DogTagSmall,
+)
 from utils.experiment import find_version, set_seed, set_deterministic, Timer
 from utils.errors import ConfigurationError
 
@@ -114,14 +121,17 @@ def train(config: DictConfig):
 
     callbacks = []
 
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{CHECKPOINT_DIR}/{full_version}/checkpoints",
-        monitor=config["monitor"],
-        mode=config["monitor_mode"],
-        auto_insert_metric_name=True,
-        save_last=True,
-    )
-    callbacks += [checkpoint_callback]
+    if config.get("save_checkpoints", True):
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=f"{CHECKPOINT_DIR}/{full_version}/checkpoints",
+            save_top_k=config["save_top_k"],
+            monitor=config["monitor"],
+            mode=config["monitor_mode"],
+            auto_insert_metric_name=True,
+            save_last=True,
+            save_weights_only=True,
+        )
+        callbacks += [checkpoint_callback]
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks += [lr_monitor]
@@ -159,6 +169,22 @@ def train(config: DictConfig):
     # *==========================================================================
     print(f"\n{timer.time()} | MODEL SETUP")
 
+    if (
+        config["model"].get("n_warmup_steps", False)
+        and config["model"]["n_warmup_steps"] <= 1.0
+        and config["model"]["n_warmup_steps"] > 0
+    ):
+        adj_n_warmup_steps = int(
+            config["model"]["n_warmup_steps"]
+            * config["trainer"]["max_epochs"]
+            * len(data_module.train_dataloader())
+        )
+
+        print(f"Setting {adj_n_warmup_steps} as the total number of warmup steps.")
+        print(f"{config['model']['n_warmup_steps']*100:.2f}% of total training steps.\n")
+
+        config["model"]["n_warmup_steps"] = adj_n_warmup_steps
+
     if config["architecture"].lower() == "udpipe2":
         model = UDPipe2(
             char_vocab=corpus.char_vocab,
@@ -184,17 +210,55 @@ def train(config: DictConfig):
             **config["model"],
         )
 
+    elif (
+        config["architecture"].lower() == "udify_finetune"
+        or config["architecture"].lower() == "udifyfinetune"
+    ):
+        model = UDIFYFineTune(
+            device=device,
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab),
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            **config["model"],
+        )
+
+    elif config["architecture"].lower() == "dogtag":
+        model = DogTag(
+            idx_char_pad=corpus.char_vocab[corpus.pad_token],
+            idx_token_pad=corpus.token_vocab[corpus.pad_token],
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab),
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            **config["model"],
+        )
+
+    elif config["architecture"].lower() == "dogtagsmall":
+        model = DogTagSmall(
+            idx_char_pad=corpus.char_vocab[corpus.pad_token],
+            idx_token_pad=corpus.token_vocab[corpus.pad_token],
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab),
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            **config["model"],
+        )
+
     else:
-        raise NotImplementedError("Have not implemented other architeactures yet.")
+        raise NotImplementedError(
+            "Architecture {config['architecture'].lower()} not recognized."
+        )
 
     # *==========================================================================
     # * Train
     # *==========================================================================
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = False
+
     trainer = Trainer(
         logger=logger,
         callbacks=callbacks,
         gpus=1 if use_cuda else 0,
-        deterministic=config["deterministic"],
+        deterministic=False,
+        benchmark=False,
         fast_dev_run=(
             int(config["fdev_run"])
             if config["fdev_run"] > 0 or config["fdev_run"]
@@ -206,27 +270,31 @@ def train(config: DictConfig):
 
     trainer.logger._default_hp_metric = None
 
-    print(f"\n{timer.time()} | SANITY CHECK")
+    if config.get("sanity_check", False):
+        print(f"\n{timer.time()} | SANITY CHECK")
 
-    trainer.validate(model, datamodule=data_module, verbose=True)
+        trainer.validate(model, datamodule=data_module, verbose=True)
 
     print(f"\n{timer.time()} | TRAINING")
 
     trainer.fit(model, datamodule=data_module)
 
-    # *##########
-    # * TESTING #
-    # *##########
+    # *==========================================================================
+    # *Test
+    # *==========================================================================
     print(f"\n{timer.time()} | TESTING")
     if not (config["fdev_run"] > 0 or config["fdev_run"]):
         # If in fastdev mode, won't save a model
         # Would otherwise throw a 'PermissionError: [Errno 13] Permission denied: ...'
 
         print("\nTESTING")
-        print(f"LOADING FROM {trainer.checkpoint_callback.best_model_path}")
-        model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-        model.freeze()
-        model.eval()
+        if config.get("save_checkpoints", True):
+            # If models are being saved, load the best and apply it to the test dataset
+            # Otherwise, just go straight to testing
+            print(f"LOADING FROM {trainer.checkpoint_callback.best_model_path}")
+            model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+            model.freeze()
+            model.eval()
 
         test_result = trainer.test(model, datamodule=data_module, verbose=True)
 

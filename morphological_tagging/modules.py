@@ -189,7 +189,7 @@ class LayerAttention(nn.Module):
 
         Args:
             h (torch.Tensor): takes a torch tensor representing the hidden layers
-                of a transformer. Assumed shape of [_,_,L,_].
+                of a transformer. Assumed shape of [B, T, L, D] or [T, B, L, D].
         """
 
         if self.dropout > 0.0 and self.training:

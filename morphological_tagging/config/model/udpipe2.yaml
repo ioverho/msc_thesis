@@ -17,7 +17,7 @@ word_rnn_kwargs:
   dropout: 0.5
 token_mask_p: 0.2
 label_smoothing: 0.03
-reg_loss_weight: 1
+reg_loss_weight: 2
 lr: 1.0e-3
 betas:
   - 0.9

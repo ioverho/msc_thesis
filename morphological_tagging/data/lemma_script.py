@@ -220,7 +220,7 @@ class LemmaScriptGenerator():
         return lemma_script
 
 
-def apply_edit_script(word_form: str, edit_rules: list):
+def apply_edit_script(word_form: str, edit_rules: list, verbose: bool = True):
     """Applies an edit script to a word_form to produce a lemma. Does not case.
 
     Args:
@@ -260,17 +260,23 @@ def apply_edit_script(word_form: str, edit_rules: list):
                 affix_ = list(copy.deepcopy(affix))
                 rule_ = list(copy.deepcopy(rule))
                 while len(rule_):
-                    edit = rule_.pop(0)
+                    try:
+                        edit = rule_.pop(0)
 
-                    if edit == "-":
-                        affix_.pop(pointer)
+                        if edit == "-":
+                            affix_.pop(pointer)
 
-                    elif edit == "+":
-                        affix_.insert(pointer, rule_.pop(0))
-                        pointer += 1
+                        elif edit == "+":
+                            affix_.insert(pointer, rule_.pop(0))
+                            pointer += 1
 
-                    elif edit == "*":
-                        pointer += 1
+                        elif edit == "*":
+                            pointer += 1
+
+                    except IndexError:
+                        if verbose:
+                            print("Returning intermediate result. Word form is does not match provided script.")
+                        break
 
                 affix_ = "".join(affix_)
 
@@ -326,12 +332,12 @@ def apply_casing_script(lemma: str, casing_script: str):
     return cased_string
 
 
-def apply_lemma_script(word_form: str, lemma_script: list):
+def apply_lemma_script(word_form: str, lemma_script: list, verbose: bool = True):
 
     rules = lemma_script.rsplit("|")
     case_rules, edit_rules = rules[0], rules[1:]
 
-    edit_result = apply_edit_script(word_form, edit_rules)
+    edit_result = apply_edit_script(word_form, edit_rules, verbose)
 
     case_result = apply_casing_script(edit_result, case_rules)
 
