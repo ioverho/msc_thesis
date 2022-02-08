@@ -15,6 +15,7 @@ word_rnn_kwargs:
   residual: True
   batch_first: False
   dropout: 0.5
+char_mask_p: 0.1
 token_mask_p: 0.2
 label_smoothing: 0.03
 reg_loss_weight: 2

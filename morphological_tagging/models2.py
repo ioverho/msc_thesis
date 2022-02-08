@@ -2,6 +2,7 @@ import warnings
 import random
 from typing import Tuple, Union, Dict, Any, Optional
 from pathlib import Path
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ import pytorch_lightning as pl
 
 from morphological_tagging.metrics import RunningStats, RunningStatsBatch, RunningF1
 from morphological_tagging.modules import (
+    SequenceMask,
     Char2Word,
     ResidualRNN,
     ResidualMLP,
@@ -322,19 +324,22 @@ class UDPipe2(JointTaggerLemmatizer):
 
     def __init__(
         self,
-        char_vocab,
-        token_vocab,
+        len_char_vocab: int,
+        char_unk_idx: int,
+        char_pad_idx: int,
+        len_token_vocab: int,
+        token_unk_idx: int,
+        token_pad_idx: int,
         c2w_kwargs: dict,
         preprocessor_kwargs: dict,
         word_rnn_kwargs: dict,
         n_lemma_scripts: int,
         n_morph_tags: int,
         n_morph_cats: int,
-        unk_token: str = "<UNK>",
-        pad_token: str = "<PAD>",
         w_embedding_dim: int = 512,
         pretrained_embedding_dim: int = 300,
         dropout: float = 0.5,
+        char_mask_p: float = 0.0,
         token_mask_p: float = 0.2,
         label_smoothing: float = 0.03,
         reg_loss_weight: float = 1.0,
@@ -363,27 +368,36 @@ class UDPipe2(JointTaggerLemmatizer):
         self.n_morph_cats = n_morph_cats
 
         # Special tokens =======================================================
-        self.unk_token = unk_token
-        self.pad_token = pad_token
+        self.char_unk_idx = char_unk_idx
+        self.char_pad_idx = char_pad_idx
+
+        self.token_unk_idx = token_unk_idx
+        self.token_pad_idx = token_pad_idx
 
         # Preprocessor =========================================================
         self.preprocessor_kwargs = preprocessor_kwargs
         self.preprocessor = UDPipe2PreProcessor(**self.preprocessor_kwargs)
 
         # Embedding Modules ====================================================
-        self.c2w_embedder = Char2Word(
-            vocab_len=len(char_vocab),
-            padding_idx=char_vocab[pad_token],
-            **self.c2w_kwargs,
+        self.char_mask = SequenceMask(
+            mask_p=char_mask_p, mask_idx=char_unk_idx, ign_idx=char_pad_idx,
         )
 
-        self.token_pad_idx = token_vocab[pad_token]
+        self.c2w_embedder = Char2Word(
+            vocab_len=len_char_vocab, padding_idx=char_pad_idx, **self.c2w_kwargs,
+        )
+
+        self.token_mask = SequenceMask(
+            mask_p=token_mask_p,
+            mask_idx=self.token_unk_idx,
+            ign_idx=self.token_pad_idx,
+        )
 
         self.w_embedder = nn.Embedding(
-            num_embeddings=len(token_vocab),
+            num_embeddings=len_token_vocab,
             embedding_dim=self.w_embedding_dim,
             padding_idx=self.token_pad_idx,
-            sparse=True,
+            sparse=False,
         )
 
         self._total_embedding_size = (
@@ -445,12 +459,6 @@ class UDPipe2(JointTaggerLemmatizer):
         # ==========================================================================
         self.dropout = dropout
 
-        self.unk_token_idx = token_vocab[unk_token]
-        self.token_mask_p = float(token_mask_p)
-        self._token_mask = D.bernoulli.Bernoulli(
-            torch.tensor([token_mask_p], dtype=torch.float, device=self.device)
-        )
-
         self.label_smoothing = label_smoothing
         self.reg_loss_weight = reg_loss_weight
         self.weight_decay = weight_decay
@@ -471,21 +479,19 @@ class UDPipe2(JointTaggerLemmatizer):
 
     def configure_optimizers(self):
 
-        optimizer_embeddings = optim.SparseAdam(
+        # Separate optimizers is a holdover from using sparse embeddings & lazy adam
+        # Likely lead to optimization instability/issues
+        optimizer_embeddings = optim.AdamW(
             [
                 {"params": self.w_embedder.parameters()},
                 {"params": self.c2w_embedder.embed.parameters()},
             ],
             lr=self.lr,
             betas=self.betas,
+            weight_decay=self.weight_decay,
         )
 
-        if self.weight_decay > 0.0:
-            rest_opt = optim.AdamW
-        else:
-            rest_opt = optim.Adam
-
-        optimizer_rest = rest_opt(
+        optimizer_rest = optim.AdamW(
             [
                 *[
                     {"params": p}
@@ -520,7 +526,9 @@ class UDPipe2(JointTaggerLemmatizer):
     def _trainable_modules(self):
         return [
             self.preprocessor,
+            self.char_mask,
             self.c2w_embedder,
+            self.token_mask,
             self.w_embedder,
             self.embed_dropout,
             self.word_rnn,
@@ -542,6 +550,8 @@ class UDPipe2(JointTaggerLemmatizer):
         skip_morph_reg: bool = False,
     ) -> Tuple[torch.Tensor]:
 
+        chars = self.char_mask(chars)
+
         c2w_e = self.c2w_embedder.forward(chars=chars, char_lens=char_lens)
 
         seqs = []
@@ -552,14 +562,9 @@ class UDPipe2(JointTaggerLemmatizer):
 
         c2w_e = pad_sequence(seqs, padding_value=self.token_pad_idx)
 
-        # Mask the input tokens with mask_p probability
-        tokens_swapped = torch.where(
-            self._token_mask.sample(tokens.size()).squeeze().bool().to(self.device),
-            tokens,
-            self.unk_token_idx,
-        )
+        tokens = self.token_mask(tokens)
 
-        w_e = self.w_embedder.forward(input=tokens_swapped)
+        w_e = self.w_embedder.forward(tokens)
 
         if pretrained_embeddings is not None:
             e = torch.cat([c2w_e, w_e, pretrained_embeddings], dim=-1)
@@ -765,11 +770,17 @@ class UDPipe2(JointTaggerLemmatizer):
 
         return lemma_preds, morph_preds
 
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> Dict[str, Any]:
 
-# TODO (ivo): add dropout support for multiple transformer models
-# different models turn out to have different naming conventions
-# TODO (ivo): add padding of tokens/BPEs outside of max input length
-# Truncation...
+        # Remove the transformer/preprocessor from the save file (saves ~75% of parameters)
+        state_dict_keys = list(checkpoint["state_dict"].keys())
+        for k in state_dict_keys:
+            if "preprocessor" in k:
+                del checkpoint["state_dict"][k]
+
+        return checkpoint
+
+
 class UDIFY(JointTaggerLemmatizer):
     """A PyTorch Lightning implementation of UDIFY.
 

@@ -383,20 +383,28 @@ class DocumentCorpus(Dataset):
 
     def _get_vocabs(self):
 
+        # Input vocab is defined based on the train set
+        # Reduces vocab sizes and allows for testing behaviour of
+        # <UNK> input at validation/test/prediction time
+        train_docs = [self.docs[i] for i in self.splits["train"]]
+
         self.token_vocab = build_vocab_from_iterator(
-            [[t for t in d.tokens] for d in self.docs],
+            [[t for t in d.tokens] for d in train_docs],
             specials=[self.unk_token, self.pad_token],
             special_first=True,
         )
         self.token_vocab.set_default_index(self.token_vocab[self.unk_token])
 
         self.char_vocab = build_vocab_from_iterator(
-            [[c for c in t] for d in self.docs for t in d.tokens],
+            [[c for c in t] for d in train_docs for t in d.tokens],
             specials=[self.unk_token, self.pad_token],
             special_first=True,
         )
         self.char_vocab.set_default_index(self.token_vocab[self.unk_token])
 
+        # Class vocabs are defined based on the all available data
+        # Need the validation and test set to have sensible classes that the model
+        # Could theoretically predict into
         self.morph_tag_vocab = {
             k: v
             for v, k in enumerate(
@@ -574,17 +582,8 @@ class DocumentCorpus(Dataset):
 
         print(f"CORPUS SETUP")
         # Iterate over the documents to get the necessary vocabs
-        print(f"Generating lemma scripts")
-        self._set_lemma_tags()
 
-        print(f"Getting vocabs")
-        self._get_vocabs()
-
-        print(f"Generating tensors")
-        # Move documents information to tensors for minibatching
-        self._move_to_pt()
-
-        print(f"Finalizing treebanks and splits logging.")
+        print(f"Splits logging")
         # Collect information about documents
         self.treebanks = defaultdict(int)
         self.splits = defaultdict(list)
@@ -607,6 +606,19 @@ class DocumentCorpus(Dataset):
             self.splits["test"] = sorted(
                 self.splits["test"], key=lambda x: len(self.docs[x]), reverse=True
             )
+
+        self.treebanks = dict(self.treebanks)
+        self.splits = dict(self.splits)
+
+        print(f"Generating lemma scripts")
+        self._set_lemma_tags()
+
+        print(f"Getting vocabs")
+        self._get_vocabs()
+
+        print(f"Generating tensors")
+        # Move documents information to tensors for minibatching
+        self._move_to_pt()
 
     def collate_batch(self, batch) -> Tuple[torch.Tensor]:
 

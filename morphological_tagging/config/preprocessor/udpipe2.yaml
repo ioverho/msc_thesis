@@ -4,7 +4,7 @@ tokenizer: None
 language: English
 cache_location: ./morphological_tagging/data/pretrained_vectors
 lower_case_backup: False
-transformer_name: distilbert-base-multilingual-cased
+transformer_name: bert-base-multilingual-cased
 transformer_dropout: null
 layer_pooling: average
 n_layers_pooling: 4

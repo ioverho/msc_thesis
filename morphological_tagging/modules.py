@@ -2,9 +2,40 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 from torch.nn.utils.rnn import pack_padded_sequence
+import torch.distributions as D
 
 from utils.errors import ConfigurationError
 
+class SequenceMask(nn.Module):
+    """Masks a sequence tensor randomly.
+    A form of regularization/data augmentation.
+    Expects the tensor to be of form [B,T] or [T,B] (i.e. no dimensions) and of type torch.long.
+
+    Args:
+        mask_p (float): the probability of a single entry in the sequence gets masked. Defaults to 0.
+        mask_idx (int): the mask index replacing the given values
+        ign_idx (int): an index to be ignored, for example, padding
+    """
+
+    def __init__(self, mask_p: float = 0.0, mask_idx: int = 0, ign_idx: int = 1) -> None:
+        super().__init__()
+
+        self.mask_p = float(mask_p)
+        self.register_buffer("mask_idx", torch.tensor(mask_idx, dtype=torch.long))
+        self.ign_idx = ign_idx
+
+    def forward(self, x: torch.Tensor):
+
+        if self.training and self.mask_p > 0.0:
+            x = torch.where(
+                torch.logical_or(
+                    torch.bernoulli(x, 1-self.mask_p), x == self.ign_idx
+                ),
+                x,
+                self.mask_idx,
+            )
+
+        return x
 
 class ResidualRNN(nn.Module):
     """An RNN with residual connections.

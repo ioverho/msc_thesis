@@ -181,16 +181,20 @@ def train(config: DictConfig):
         )
 
         print(f"Setting {adj_n_warmup_steps} as the total number of warmup steps.")
-        print(f"{config['model']['n_warmup_steps']*100:.2f}% of total training steps.\n")
+        print(
+            f"{config['model']['n_warmup_steps']*100:.2f}% of total training steps.\n"
+        )
 
         config["model"]["n_warmup_steps"] = adj_n_warmup_steps
 
     if config["architecture"].lower() == "udpipe2":
         model = UDPipe2(
-            char_vocab=corpus.char_vocab,
-            token_vocab=corpus.token_vocab,
-            unk_token=corpus.unk_token,
-            pad_token=corpus.pad_token,
+            len_char_vocab=len(corpus.char_vocab),
+            char_unk_idx=corpus.char_vocab[corpus.unk_token],
+            char_pad_idx=corpus.char_vocab[corpus.pad_token],
+            len_token_vocab=len(corpus.token_vocab),
+            token_unk_idx=corpus.token_vocab[corpus.unk_token],
+            token_pad_idx=corpus.token_vocab[corpus.pad_token],
             pretrained_embedding_dim=corpus.pretrained_embeddings_dim,
             n_lemma_scripts=len(corpus.script_counter),
             n_morph_tags=len(corpus.morph_tag_vocab) - 1,
@@ -292,7 +296,9 @@ def train(config: DictConfig):
             # If models are being saved, load the best and apply it to the test dataset
             # Otherwise, just go straight to testing
             print(f"LOADING FROM {trainer.checkpoint_callback.best_model_path}")
-            model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+            model = model.load_from_checkpoint(
+                trainer.checkpoint_callback.best_model_path, strict=False
+            )
             model.freeze()
             model.eval()
 
