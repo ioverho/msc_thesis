@@ -770,16 +770,6 @@ class UDPipe2(JointTaggerLemmatizer):
 
         return lemma_preds, morph_preds
 
-    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> Dict[str, Any]:
-
-        # Remove the transformer/preprocessor from the save file (saves ~75% of parameters)
-        state_dict_keys = list(checkpoint["state_dict"].keys())
-        for k in state_dict_keys:
-            if "preprocessor" in k:
-                del checkpoint["state_dict"][k]
-
-        return checkpoint
-
 
 class UDIFY(JointTaggerLemmatizer):
     """A PyTorch Lightning implementation of UDIFY.
