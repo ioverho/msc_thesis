@@ -1,5 +1,3 @@
-import os
-import csv
 import re
 import json
 from pathlib import Path
@@ -22,6 +20,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader, Subset
 import torchtext
 from torchtext.vocab import build_vocab_from_iterator, Vectors
+from morphological_tagging.data.dataloaders import TokenDataloader
 
 from morphological_tagging.data.lemma_script import LemmaScriptGenerator
 
@@ -43,7 +42,7 @@ with open("./morphological_tagging/data/language_to_family.json") as f:
 def get_conllu_files(
     language: str, name: str = "merge", source: str = None
 ) -> Union[dict[list], list]:
-    """Get the UD/CONLLU/SIGMORPHON treebanks from the BASEPATH dir.
+    """Get the UD/CONLLU/SIGMORPHON treebanks from the source dir.
     Only gets the `.conllu files` and returns absolute paths.
 
     Args:
@@ -540,7 +539,7 @@ class DocumentCorpus(Dataset):
                                 dtype=torch.long,
                             ),
                             len(self.morph_tag_vocab),
-                        )[:, :-1],
+                        ),
                         dim=0,
                     )
                     for tagset in d.morph_tags
@@ -576,7 +575,7 @@ class DocumentCorpus(Dataset):
                 chars_tensor, tokens_tensor, morph_tags_tensor, morph_cats_tensor
             )
 
-    def setup(self):
+    def setup(self, generate_tensors: bool = True):
         """Code to run when finished importing all files.
         """
 
@@ -616,9 +615,10 @@ class DocumentCorpus(Dataset):
         print(f"Getting vocabs")
         self._get_vocabs()
 
-        print(f"Generating tensors")
-        # Move documents information to tensors for minibatching
-        self._move_to_pt()
+        if generate_tensors:
+            print(f"Generating tensors")
+            # Move documents information to tensors for minibatching
+            self._move_to_pt()
 
     def collate_batch(self, batch) -> Tuple[torch.Tensor]:
 
@@ -738,16 +738,31 @@ class DocumentCorpus(Dataset):
 
 
 class TreebankDataModule(pl.LightningDataModule):
-    """[summary]
+    """A PyTorch-Lightning datamodule that regulates the construction, loading, saving and batching of Treebank Corpora.
 
     Args:
-        pl ([type]): [description]
+        batch_size (int): the default batchsize. Can be overwritten when calling individual dataloaders
+        language (Optional[str], optional): the treebank's language(s) (see `DocumentCorpus'). Defaults to None.
+        treebank_name (Optional[str], optional): the treebank's name (see `DocumentCorpus'). Defaults to None.
+        batch_first (Optional[bool], optional): whether tensor's first dimension is the batch size or sequence length. Defaults to True.
+        len_sorted (Optional[bool], optional): whether or not to length sort the dataset. Defaults to True.
+        unk_token (Optional[str], optional): defaults to "<UNK>".
+        pad_token (Optional[str], optional): defaults to "<PAD>".
+        return_tokens_raw (Optional[bool], optional): see `DocumentCorpus'. Defaults to True.
+        max_tokens (int, optional): max number of tokens per document (note, this is raw tokens, not BPE/SPE). Defaults to 256.
+        max_chars (int, optional): max number of chars per document. Defaults to 2048.
+        remove_duplicates (bool, optional): remove duplicate texts. Defaults to True.
+        remove_unique_lemma_scripts (bool, optional): removes lemma scripts with only a single lemma (not recommended). Defaults to False.
+        include_family (bool, optional): includes typological family when searching for CONLLU files (i.e. all Germanic languages). Defaults to False.
+        family_level (str, optional): which level to group languages by, `sibling' indicates same family (Dutch -> Germanic), `parent' indicates same genus (Dutch -> Indo-European). Defaults to "sibling".
+        quality_limit (float, optional): lower limit of UD quality estimate. See site for more details. Very low values indicate low quality annotations. Defaults to 0.0.
+        source (Optional[str], optional): directory in which files CONLLU files can be found. Defaults to None.
     """
 
     def __init__(
         self,
-        batch_size,
-        language: Optional[str] = None,
+        batch_size: int,
+        language: Optional[Union[str, List[str]]] = None,
         treebank_name: Optional[str] = None,
         batch_first: Optional[bool] = True,
         len_sorted: Optional[bool] = True,
@@ -764,10 +779,6 @@ class TreebankDataModule(pl.LightningDataModule):
         source: Optional[str] = None,
     ):
         super().__init__()
-
-        # TODO (ivo): add support for predefined data module loading
-        # if (language is None) or (sorted is None) and :
-        #    raise ConfigurationError
 
         if isinstance(language, str):
             self.language = [language]
@@ -794,7 +805,7 @@ class TreebankDataModule(pl.LightningDataModule):
         self.quality_limit = quality_limit
         self.source = source if isinstance(source, str) else BASEPATH
 
-    def prepare_data(self) -> None:
+    def prepare_data(self, **kwargs) -> None:
 
         print("FINDING CONNLU FILES")
         print(f"Looking at:\n\t{Path(self.source).absolute()}")
@@ -900,7 +911,7 @@ class TreebankDataModule(pl.LightningDataModule):
                 fp, split, name, language, remove_duplicates=self.remove_duplicates
             )
 
-        self.corpus.setup()
+        self.corpus.setup(**kwargs)
 
         print()
         print(self.corpus)
@@ -915,47 +926,67 @@ class TreebankDataModule(pl.LightningDataModule):
         if stage in (None, "test"):
             self.test_corpus = Subset(self.corpus, self.corpus.splits["test"])
 
-    def train_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
+    def _get_dataloader(
+        self,
+        split: str,
+        batch_size: Optional[int] = None,
+        use_pytorch: bool = True,
+        **dataloader_kwargs,
+    ):
+        if split == "train":
+            corpus = self.train_corpus
+        elif split == "val" or split == "valid":
+            corpus = self.valid_corpus
+        elif split == "test":
+            corpus = self.test_corpus
+
         if batch_size is None:
             batch_size = self.batch_size
 
-        train_loader = DataLoader(
-            self.train_corpus,
-            batch_size=batch_size,
-            shuffle=False if self.len_sorted else True,
-            collate_fn=self.corpus.collate_batch,
-            **dataloader_kwargs,
+        if use_pytorch:
+            data_loader = DataLoader(
+                corpus,
+                batch_size=batch_size,
+                shuffle=False if self.len_sorted else True,
+                collate_fn=self.corpus.collate_batch,
+                **dataloader_kwargs,
+            )
+        else:
+            data_loader = TokenDataloader(
+                dataset=corpus,
+                collate_fn=self.corpus.collate_batch,
+                **dataloader_kwargs,
+            )
+
+        return data_loader
+
+    def train_dataloader(
+        self,
+        batch_size: Optional[int] = None,
+        use_pytorch: bool = True,
+        **dataloader_kwargs,
+    ):
+        return self._get_dataloader(
+            "train", batch_size, use_pytorch, **dataloader_kwargs
         )
 
-        return train_loader
+    def val_dataloader(
+        self,
+        batch_size: Optional[int] = None,
+        use_pytorch: bool = True,
+        **dataloader_kwargs,
+    ):
+        return self._get_dataloader("val", batch_size, use_pytorch, **dataloader_kwargs)
 
-    def val_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
-        if batch_size is None:
-            batch_size = self.batch_size
-
-        val_loader = DataLoader(
-            self.valid_corpus,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.corpus.collate_batch,
-            **dataloader_kwargs,
+    def test_dataloader(
+        self,
+        batch_size: Optional[int] = None,
+        use_pytorch: bool = True,
+        **dataloader_kwargs,
+    ):
+        return self._get_dataloader(
+            "test", batch_size, use_pytorch, **dataloader_kwargs
         )
-
-        return val_loader
-
-    def test_dataloader(self, batch_size: Optional[int] = None, **dataloader_kwargs):
-        if batch_size is None:
-            batch_size = self.batch_size
-
-        test_loader = DataLoader(
-            self.test_corpus,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.corpus.collate_batch,
-            **dataloader_kwargs,
-        )
-
-        return test_loader
 
     def save(self, fp):
         with open(fp, "wb") as fp:
@@ -966,487 +997,3 @@ class TreebankDataModule(pl.LightningDataModule):
 
         with open(fp, "rb") as fp:
             return pickle.load(fp)
-
-
-#! DEPRECATED CLASS
-@dataclass
-class DocumentCorpusDeprecated(Dataset):
-    """A class for reading, holding and processing many documents.
-    """
-
-    docs: List = field(default_factory=lambda: [])
-    unk_token: str = "<UNK>"
-    pad_token: str = "<PAD>"
-    treebanks: Dict = field(default_factory=lambda: defaultdict(int))
-    splits: Dict = field(default_factory=lambda: defaultdict(list))
-    batch_first: bool = False
-    sorted: bool = True
-    return_tokens_raw: bool = False
-
-    def __len__(self):
-        return len(self.docs)
-
-    def __getitem__(self, i: int):
-        return self.docs[i]
-
-    def __str__(self):
-        return f"DocumentCorpus(\n\tlen={len(self.docs)},\n\ttreebanks={self.treebanks.keys()},\n\tsplits={self.splits.keys()},\n\tbatch_first={self.batch_first},\n\tsorted={self.sorted}\n)"
-
-    def __repr__(self):
-        return self.__str__()
-
-    def clear_docs(self):
-
-        self.docs = []
-
-    def _get_vocabs(self):
-
-        self.token_vocab = build_vocab_from_iterator(
-            [[t for t in d.tokens] for d in self.docs],
-            specials=[self.unk_token, self.pad_token],
-            special_first=True,
-        )
-        self.token_vocab.set_default_index(self.token_vocab[self.unk_token])
-
-        self.char_vocab = build_vocab_from_iterator(
-            [[c for c in t] for d in self.docs for t in d.tokens],
-            specials=[self.unk_token, self.pad_token],
-            special_first=True,
-        )
-        self.char_vocab.set_default_index(self.token_vocab[self.unk_token])
-
-        self.morph_tag_vocab = {
-            k: v
-            for v, k in enumerate(
-                sorted(
-                    {
-                        tag
-                        for d in self.docs
-                        for tagset in d.morph_tags
-                        for tag in tagset
-                    }
-                )
-            )
-        }
-
-        # ======================================================================
-        # Morphological feature categories (for regularization)
-        # ======================================================================
-        with open(ALL_TAGS_FP, "rb") as f:
-            uni_morph_tags = json.load(f)
-
-        valid_mtags = (
-            set(map(lambda x: x.lower(), self.morph_tag_vocab.keys()))
-            & uni_morph_tags.keys()
-        )
-
-        self.morph_tag_name_vocab = {
-            mtag: uni_morph_tags[mtag][0] for mtag in list(valid_mtags)
-        }
-        self.morph_tag_cat_vocab = {
-            mtag: uni_morph_tags[mtag][1] for mtag in list(valid_mtags)
-        }
-        self.morph_tag_cat_vocab["_"] = "_"
-
-        self.morph_cat_vocab = {
-            k: v for v, k in enumerate(sorted(set(self.morph_tag_cat_vocab.values())))
-        }
-        self.morph_cat_vocab["_"] = len(self.morph_cat_vocab) - 1
-
-    def _move_to_pt(self):
-
-        for d in self.docs:
-            chars_tensor = [
-                torch.tensor(
-                    self.char_vocab.lookup_indices([c for c in t]), dtype=torch.long
-                )
-                for t in d.tokens
-            ]
-
-            tokens_tensor = torch.tensor(
-                self.token_vocab.lookup_indices([t for t in d.tokens]), dtype=torch.long
-            )
-
-            morph_tags_tensor = torch.stack(
-                [
-                    torch.sum(
-                        F.one_hot(
-                            torch.tensor(
-                                [self.morph_tag_vocab.get(tag, "_") for tag in tagset],
-                                dtype=torch.long,
-                            ),
-                            len(self.morph_tag_vocab),
-                        )[:, :-1],
-                        dim=0,
-                    )
-                    for tagset in d.morph_tags
-                ],
-                dim=0,
-            )
-
-            morph_cats_tensor = torch.stack(
-                [
-                    torch.sum(
-                        F.one_hot(
-                            torch.tensor(
-                                list(
-                                    {
-                                        self.morph_cat_vocab[
-                                            self.morph_tag_cat_vocab[tag.lower()]
-                                        ]
-                                        for tag in tagset
-                                    }
-                                ),
-                                dtype=torch.long,
-                            ),
-                            len(self.morph_cat_vocab),
-                        ),
-                        dim=0,
-                    )
-                    for tagset in d.morph_tags
-                ],
-                dim=0,
-            )
-
-            d.set_tensors(
-                chars_tensor, tokens_tensor, morph_tags_tensor, morph_cats_tensor
-            )
-
-    def parse_tree_file(self, fp: str, treebank_name: str = None, split: str = None):
-        """Parse a single document with CONLL-U trees into a list of Documents.
-        Will append to documents, not overwrite.
-
-        Args:
-            fp (str): filepath to the document.
-            treebank_name (str): the name of the treebank which is being parsed
-
-        """
-        with open(fp, newline="\n", encoding="utf8") as csvfile:
-            conllu_data = csv.reader(csvfile, delimiter="\t", quotechar="\u2400")
-
-            cur_doc = Document()
-            for i, row in enumerate(conllu_data):
-
-                # New sentence
-                if len(row) == 0:
-
-                    self.docs.append(cur_doc)
-                    self.treebanks[
-                        treebank_name if treebank_name is not None else "Undefined"
-                    ] += 1
-
-                    cur_doc = Document()
-                    cur_doc.split = split
-                    cur_doc.treebank = treebank_name
-                    self.splits[split if split is not None else "Undefined"].append(
-                        len(self.docs) - 1
-                    )
-
-                # Get sentence ID
-                elif "# sent_id = " in row[0]:
-                    sent_id = row[0][12:]
-
-                    cur_doc.sent_id = sent_id
-
-                # Get sentence in plain language (non-tokenized)
-                elif "# text = " in row[0]:
-                    full_text = row[0][9:]
-
-                    cur_doc.text = full_text
-
-                # Get tree information
-                # CONLL-X format
-                elif row[0].isnumeric():
-                    if "." in row[0]:
-                        continue
-                    cur_doc.tree.add(row)
-
-            if cur_doc.sent_id is not None:
-                self.docs.append(cur_doc)
-
-                self.treebanks[
-                    treebank_name if treebank_name is not None else "Undefined"
-                ] += 1
-
-    def setup(self):
-        """Code to run when finished importing all files.
-        """
-        # Iterate over the documents to get the necessary vocabs
-        self._get_vocabs()
-
-        # Iterate over documents again to add the morph. cats. to each doc
-        for d in self.docs:
-            morph_cats = [
-                {self.morph_tag_cat_vocab[tag.lower()] for tag in tagset}
-                for tagset in d.morph_tags
-            ]
-
-            d.set_morph_cats(morph_cats)
-
-        # Move documents information to tensors for minibatching
-        self._move_to_pt()
-
-        # Collect information about documents
-        self.treebanks = dict(self.treebanks)
-        self.splits = dict(self.splits)
-
-        if self.sorted:
-            self.splits["train"] = sorted(
-                self.splits["train"], key=lambda x: len(self.docs[x]), reverse=True
-            )
-
-            self.splits["dev"] = sorted(
-                self.splits["dev"], key=lambda x: len(self.docs[x]), reverse=True
-            )
-
-            self.splits["test"] = sorted(
-                self.splits["test"], key=lambda x: len(self.docs[x]), reverse=True
-            )
-
-    def set_lemma_tags(self):
-
-        # Iterate over all documents once to get stats on the lemma scripts
-        self.script_counter, self.script_examples = Counter(), defaultdict(set)
-        docs_scripts = []
-        for i, d in enumerate(self.docs):
-
-            doc_scripts = []
-            for wf, lm in zip(d.tokens, d.lemmas):
-
-                lemma_script = LemmaScriptGenerator(wf, lm).get_lemma_script()
-                self.script_counter[lemma_script] += 1
-
-                doc_scripts.append(lemma_script)
-
-                if len(self.script_examples[lemma_script]) < 3:
-                    self.script_examples[lemma_script].add(f"{wf}\u2192{lm}")
-
-            docs_scripts.append(doc_scripts)
-
-        # Generate script to class conversion
-        self.script_to_id = {
-            k: i
-            for i, (k, _) in enumerate(
-                sorted(self.script_counter.items(), key=lambda x: x[1], reverse=True)
-            )
-        }
-
-        self.id_to_script = list(self.script_to_id.keys())
-
-        # Add the scripts as classes to the individual documents
-        for i, doc_scripts in enumerate(docs_scripts):
-
-            self.docs[i].set_lemma_tags(
-                torch.tensor(
-                    [self.script_to_id[script] for script in doc_scripts],
-                    dtype=torch.long,  # TODO (ivo) add device support
-                )
-            )
-
-    def lemma_tags_overview(self, n: int = 11) -> pd.DataFrame:
-        """Get the most common lemma scripts and some examples.
-
-        Args:
-            n (int, optional): number of scripts to show. Defaults to 11.
-        """
-
-        most_common_rules = [
-            [script, count] for script, count in self.script_counter.most_common(n)
-        ]
-
-        for entry in most_common_rules:
-            entry.append(self.script_examples[entry[0]])
-
-        df = pd.DataFrame(most_common_rules, columns=["Rule", "Count", "Examples"])
-
-        return df
-
-    def collate_batch(self, batch) -> Tuple[torch.Tensor]:
-
-        docs_subset = [
-            [
-                d.chars_tensor,
-                d.tokens,
-                d.tokens_tensor,
-                d.pretrained_embeddings,
-                d.morph_tags_tensor,
-                d.lemma_tags_tensor,
-                d.morph_cats_tensor,
-            ]
-            for d in batch
-        ]
-
-        (
-            chars,
-            tokens_raw,
-            tokens,
-            pretrained_embeddings,
-            morph_tags,
-            lemma_tags,
-            morph_cats,
-        ) = list(map(list, zip(*docs_subset)))
-
-        # Characters [T_c, B]
-        char_lens = [c.size(0) for seq in chars for c in seq]
-
-        chars = pad_sequence(
-            [c for seq in chars for c in seq],
-            padding_value=self.char_vocab[self.pad_token],
-        )
-
-        # Tokens [T_t, B]
-        token_lens = [seq.size(0) for seq in tokens]
-
-        tokens_raw = [[token for token in seq] for seq in tokens_raw]
-
-        tokens = pad_sequence(tokens, padding_value=0)
-
-        if self.pretrained_embeddings_dim != 0:
-            pretrained_embeddings = pad_sequence(pretrained_embeddings, padding_value=0)
-        else:
-            pretrained_embeddings = None
-
-        # Tags [T_t x B, C]/[T_t x B]
-        lemma_tags = pad_sequence(
-            lemma_tags, batch_first=self.batch_first, padding_value=-1
-        )
-
-        morph_tags = pad_sequence(
-            morph_tags, batch_first=self.batch_first, padding_value=-1
-        )
-
-        morph_cats = pad_sequence(
-            morph_cats, batch_first=self.batch_first, padding_value=-1
-        )
-
-        if self.return_tokens_raw:
-            return (
-                char_lens,
-                chars,
-                token_lens,
-                tokens_raw,
-                tokens,
-                pretrained_embeddings,
-                lemma_tags,
-                morph_tags,
-                morph_cats,
-            )
-
-        else:
-            return (
-                char_lens,
-                chars,
-                token_lens,
-                tokens,
-                pretrained_embeddings,
-                lemma_tags,
-                morph_tags,
-                morph_cats,
-            )
-
-    def _collate_batch_preprocess(self, batch) -> Tuple[torch.Tensor]:
-
-        docs_subset = [[d.tokens, d] for d in batch]
-
-        tokens_raw, docs = list(map(list, zip(*docs_subset)))
-
-        token_lens = [len(seq) for seq in tokens_raw]
-
-        tokens_raw = [[token for token in seq] for seq in tokens_raw]
-
-        return token_lens, tokens_raw, docs
-
-    @property
-    def pretrained_embeddings_dim(self) -> int:
-
-        if len(self.docs) == 0:
-            raise ValueError("This corpus has no documents.")
-
-        else:
-            try:
-                if isinstance(self.docs[0].pretrained_embeddings, torch.Tensor):
-                    return self.docs[0].pretrained_embeddings.size(-1)
-                elif self.docs[0].pretrained_embeddings == 0:
-                    return 0
-            except ValueError:
-                return 0
-
-    # ! Deprecated method
-    # TODO (ivo): remove
-    def add_word_embs(self, vecs: Vectors, lower_case_backup: bool = False, **kwargs):
-        """Add pre-trained word embeddings to a collection of documents.
-
-        Args:
-            docs (List[Document]): [description]
-            vecs (Vectors, optional): [description]. Defaults to FastText.
-            lower_case_backup (bool, optional): [description]. Defaults to False.
-
-        """
-
-        embeds = vecs(**kwargs)
-
-        for d in self.docs:
-            d.set_word_embeddings(
-                embeds.get_vecs_by_tokens(d.tokens, lower_case_backup), vecs.__name__
-            )
-
-    # ! Deprecated method
-    # TODO (ivo): remove
-    def add_context_embs(self, model, tokenizer):
-        """Generate contextual embedding from document text.
-
-        Args:
-            d (Document): [description]
-            tokenizer (Huggingface Tokenizer):
-            model (Huggingface Transformer):
-
-        """
-
-        for d in self.docs:
-            # Tokenize the whole text
-            s_tokenized = tokenizer(d.text, return_offsets_mapping=True)
-
-            # Find the token spans within the text
-            end, spans = 0, []
-            for t in d.tokens:
-                match = re.search(re.escape(t), d.text[end:])
-
-                spans.append((match.span()[0] + end, match.span()[1] + end))
-
-                end += match.span()[-1]
-
-            # Find correspondence of tokenized string and dataset tokens
-            index, correspondence = 0, defaultdict(list)
-            for i, (_, tokenized_end) in enumerate(s_tokenized["offset_mapping"][1:-1]):
-                # Iterate through the offset_mapping of the tokenizer
-                # add the tokenized token to the mapping for the original token
-                correspondence[index].append(i)
-
-                # Increment the index if tokenized token span is exhausted
-                if tokenized_end == spans[index][-1]:
-                    index += 1
-
-            # Convert from defaultdict to regular dict
-            correspondence = dict(correspondence)
-
-            # Get contextualized embeddings
-            contextual_embeddings = model(
-                **tokenizer(d.text, return_tensors="pt"), output_hidden_states=True
-            )
-
-            contextual_embeddings = torch.stack(
-                contextual_embeddings["hidden_states"][-4:]
-            )
-            contextual_embeddings = torch.mean(contextual_embeddings, dim=0).squeeze()
-
-            contextual_embeddings_corresponded = torch.stack(
-                [
-                    torch.mean(contextual_embeddings[correspondence[k]], dim=0)
-                    for k in correspondence.keys()
-                ]
-            )
-
-            d.set_context_embeddings(
-                contextual_embeddings_corresponded, type(model).__name__
-            )
-

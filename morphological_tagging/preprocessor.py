@@ -74,7 +74,6 @@ class UDPipe2PreProcessor(nn.Module):
         context_embeddings: bool,
         tokenizer: Callable = None,
         language: str = "English",
-        cache_location: str = "./morphological_tagging/data/pretrained_vectors",
         lower_case_backup: bool = False,
         transformer_name: str = "distilbert-base-multilingual-cased",
         transformer_dropout: float = None,
@@ -88,7 +87,6 @@ class UDPipe2PreProcessor(nn.Module):
         self.tokenizer = tokenizer
         self.context_embeddings = context_embeddings
         self.language = language
-        self.cache_location = cache_location
         self.lower_case_backup = lower_case_backup
         self.transformer_name = transformer_name
         self.transformer_dropout = transformer_dropout
@@ -96,15 +94,14 @@ class UDPipe2PreProcessor(nn.Module):
         self.n_layers_pooling = n_layers_pooling
         self.wordpiece_pooling = wordpiece_pooling
 
+        #! DEPRECATED: tokenization is handled elsewhere
         if tokenizer is None:
             self.tokenizer = word_tokenize
         else:
             self.tokenizer = tokenizer
 
         if self.word_embeddings:
-            self.vecs = FastText(
-                language=FASTTEXT_LANG_CONVERSION[self.language], cache=cache_location
-            )
+            self.vecs = FastText(language=FASTTEXT_LANG_CONVERSION[self.language])
 
         if self.context_embeddings:
             self.config = AutoConfig.from_pretrained(self.transformer_name)
@@ -123,7 +120,7 @@ class UDPipe2PreProcessor(nn.Module):
             self.transformer_tokenizer = AutoTokenizer.from_pretrained(
                 self.transformer_name, use_fast=True
             )
-            self.transformer = AutoModel.from_config(self.config)
+            self.transformer = AutoModel.from_pretrained(self.transformer_name, config=self.config)
 
             self.layer_pooling = layer_pooling
             self.n_layers_pooling = n_layers_pooling

@@ -1,10 +1,10 @@
 defaults:
   - default_train
-  - model: dogtag
+  - model: udify_bert
   - _self_
 
-experiment_name: DogTag_mono
-architecture: dogtag
+experiment_name: UDIFY_mono
+architecture: udify
 
 seed: 610
 gpu: 1
@@ -21,7 +21,6 @@ data:
   source: ./morphological_tagging/data/um-treebanks-v2.9
 
 trainer:
-  precision: 16
   gradient_clip_val: 2
   max_epochs: 50
   num_sanity_val_steps: 0

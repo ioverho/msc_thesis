@@ -1,10 +1,12 @@
-dataset_name: Finnish_merge
+dataset_name: Dutch_merge
 model_name: UDPipe2
 mode: last
 quality_limit: 0.2
 batch_first: False
 overwrite_ok: True
-gpu: 1
+gpu: 0
+max_tokens: 2048
+max_batch_size: 512
 
 hydra:
   run:

@@ -22,5 +22,5 @@ data:
 
 trainer:
   gradient_clip_val: 2
-  max_epochs: 50
+  max_epochs: 60
   num_sanity_val_steps: 0

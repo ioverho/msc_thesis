@@ -5,6 +5,7 @@ c2w_kwargs:
   out_dim: -1
   batch_first: True
   dropout: 0.5
+char_mask_p: 0.05
 token_embeddings_dropout: 0.5
 rnn_kwargs:
   input_size: 768

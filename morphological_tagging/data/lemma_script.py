@@ -17,22 +17,24 @@ def break_match(a: str, b: str, match: namedtuple):
         Tuple[Tuple[str]]: a tuple of tuples of string affixes
     """
 
-    a_prefix = a[:match.a]
-    a_root = a[match.a:match.a+match.size]
-    a_suffix = a[match.a+match.size:]
+    a_prefix = a[: match.a]
+    a_root = a[match.a : match.a + match.size]
+    a_suffix = a[match.a + match.size :]
 
-    b_prefix =  b[:match.b]
-    b_root = b[match.b:match.b+match.size]
-    b_suffix = b[match.b+match.size:]
+    b_prefix = b[: match.b]
+    b_root = b[match.b : match.b + match.size]
+    b_suffix = b[match.b + match.size :]
 
     return (a_prefix, a_root, a_suffix), (b_prefix, b_root, b_suffix)
+
 
 class EditType(Enum):
     EQL = 0
     INS = 1
     DEL = 2
 
-class LemmaScriptGenerator():
+
+class LemmaScriptGenerator:
     """Class with which a lemma script can be generated.
 
     Implements all the individual parts as described in Straka's works.
@@ -68,16 +70,19 @@ class LemmaScriptGenerator():
         def _shortest_path():
             lenA, lenB = len(A), len(B)
             max_edit = lenA + lenB
-            V = [0 for _ in range(2*max_edit+1)]
+            V = [0 for _ in range(2 * max_edit + 1)]
             T = []
 
-            for D in range(max_edit+1):
+            for D in range(max_edit + 1):
                 T.append(copy.deepcopy(V))
-                for k in range(-D, D+1, 2):
-                    x = V[k+1] if (k == -D or (k != D and V[k-1]
-                                               < V[k+1])) else V[k-1]+1
+                for k in range(-D, D + 1, 2):
+                    x = (
+                        V[k + 1]
+                        if (k == -D or (k != D and V[k - 1] < V[k + 1]))
+                        else V[k - 1] + 1
+                    )
                     y = x - k
-                    while (x < lenA and y < lenB and A[x] == B[y]):
+                    while x < lenA and y < lenB and A[x] == B[y]:
                         x += 1
                         y += 1
 
@@ -87,27 +92,27 @@ class LemmaScriptGenerator():
             return T
 
         def _backtrack(trace):
-
             def _line_diff(x, y, x_prev, y_prev):
                 if x == x_prev:
-                    return (-1, y_prev+1, EditType.INS)
+                    return (-1, y_prev + 1, EditType.INS)
                 elif y == y_prev:
-                    return (x_prev+1, -1, EditType.DEL)
+                    return (x_prev + 1, -1, EditType.DEL)
                 else:
-                    return (x_prev+1, y_prev+1, EditType.EQL)
+                    return (x_prev + 1, y_prev + 1, EditType.EQL)
 
             x = len(A)
             y = len(B)
 
             for (D, v) in reversed(list(enumerate(trace))):
                 k = x - y
-                k_prev = k + \
-                    1 if (k == -D or (k != D and v[k-1] < v[k+1])) else k-1
+                k_prev = (
+                    k + 1 if (k == -D or (k != D and v[k - 1] < v[k + 1])) else k - 1
+                )
                 x_prev = v[k_prev]
                 y_prev = x_prev - k_prev
 
                 while x > x_prev and y > y_prev:
-                    yield _line_diff(x, y, x-1, y-1)
+                    yield _line_diff(x, y, x - 1, y - 1)
                     x -= 1
                     y -= 1
 
@@ -135,7 +140,7 @@ class LemmaScriptGenerator():
         Returns:
             str: edit script in string format
         """
-        diff =  self._myers_diff(wf_affix, lm_affix)
+        diff = self._myers_diff(wf_affix, lm_affix)
 
         result = ""
         for (_, new, editType) in diff:
@@ -147,7 +152,7 @@ class LemmaScriptGenerator():
                 value = "*"
                 sign = ""
             else:
-                value = lm_affix[new-1]
+                value = lm_affix[new - 1]
 
             result = f"{sign}{value}" + result
 
@@ -162,7 +167,7 @@ class LemmaScriptGenerator():
 
         case_script = []
         for i, c in enumerate(self.lemma):
-            case = ("U" if c.isupper() else "L")
+            case = "U" if c.isupper() else "L"
             if i == 0 or case_script[-1][0] != case:
                 case_script.append(case + str(i))
 
@@ -181,10 +186,9 @@ class LemmaScriptGenerator():
         # Edit script
         # ======================================================================
         # First, get the longest-common-substring (LCS) to find 'root'
-        match = SequenceMatcher(a=self.word_form.lower(), b=self.lemma.lower()).find_longest_match(
-            alo=0, ahi=len(self.word_form),
-            blo=0, bhi=len(self.lemma)
-        )
+        match = SequenceMatcher(
+            a=self.word_form.lower(), b=self.lemma.lower()
+        ).find_longest_match(alo=0, ahi=len(self.word_form), blo=0, bhi=len(self.lemma))
 
         # Check for non-existent LCS, which implies irregular inflection
         if match.size == 0:
@@ -192,9 +196,10 @@ class LemmaScriptGenerator():
 
         # Else, proceed to produce edit scripts for pre- and suffix separately
         else:
-            (wf_prefix, wf_root, wf_suffix), \
-                (lm_prefix, lm_root, lm_suffix) = \
-                break_match(self.word_form.lower(), self.lemma.lower(), match)
+            (
+                (wf_prefix, wf_root, wf_suffix),
+                (lm_prefix, lm_root, lm_suffix),
+            ) = break_match(self.word_form.lower(), self.lemma.lower(), match)
 
             # Get the edit script, and check for empty edit special case ("d" for "do nothing")
             if len(wf_prefix) or len(lm_prefix):
@@ -238,19 +243,19 @@ def apply_edit_script(word_form: str, edit_rules: list, verbose: bool = True):
 
         # First split the word_form based on the edit rules for the affixes
         prefix_counts = Counter(edit_rules[0])
-        prefix_length = prefix_counts['-'] + prefix_counts['*']
+        prefix_length = prefix_counts["-"] + prefix_counts["*"]
         wf_prefix = word_form[:prefix_length].lower()
 
         suffix_counts = Counter(edit_rules[1])
-        suffix_length = suffix_counts['-'] + suffix_counts['*']
-        wf_suffix = word_form[len(word_form)-suffix_length:].lower()
+        suffix_length = suffix_counts["-"] + suffix_counts["*"]
+        wf_suffix = word_form[len(word_form) - suffix_length :].lower()
 
-        wf_root = word_form[prefix_length:len(word_form)-suffix_length].lower()
+        wf_root = word_form[prefix_length : len(word_form) - suffix_length].lower()
 
         edit_result = [wf_root]
         for i, (affix, rule) in enumerate(zip([wf_prefix, wf_suffix], edit_rules)):
 
-            if rule == 'd':
+            if rule == "d":
                 # If the rule is do nothing, skip
                 affix_ = affix
 
@@ -273,9 +278,19 @@ def apply_edit_script(word_form: str, edit_rules: list, verbose: bool = True):
                         elif edit == "*":
                             pointer += 1
 
+                    # THIS GIVES SO MANY ERRORS ON LISA...
                     except IndexError:
                         if verbose:
-                            print("Returning intermediate result. Word form is does not match provided script.")
+                            try:
+                                wf_ = word_form.encode("utf-8").decode("latin-1")
+                                print(
+                                    f"Returning intermediate result. Word form, {wf_}, shorter than required by script, {edit_rules}"
+                                )
+
+                            except UnicodeEncodeError:
+                                print(
+                                    f"Returning intermediate result. Word form, <CANT DISPLAY>, shorter than required by script, <CANT DISPLAY>"
+                                )
                         break
 
                 affix_ = "".join(affix_)
@@ -325,7 +340,7 @@ def apply_casing_script(lemma: str, casing_script: str):
             rule = script_.pop(-1)
             case, pos = rule[0], int(rule[1:])
 
-        cased_c = c.upper() if case == 'U' else c.lower()
+        cased_c = c.upper() if case == "U" else c.lower()
 
         cased_string = cased_c + cased_string
 

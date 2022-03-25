@@ -15,10 +15,12 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 import dotenv
 import hydra
 from omegaconf import DictConfig, OmegaConf
+import wandb
+
 
 # User-defined
 from morphological_tagging.data.corpus import TreebankDataModule
-from morphological_tagging.models2 import (
+from morphological_tagging.models import (
     UDIFYFineTune,
     UDPipe2,
     UDIFY,
@@ -109,6 +111,7 @@ def train(config: DictConfig):
             save_dir=f"{CHECKPOINT_DIR}/{full_version}",
             group=config["experiment_name"],
             config=OmegaConf.to_container(config),
+            settings=wandb.Settings(start_method="fork"),
             **config["logging"]["logger_kwargs"],
         )
 
@@ -161,7 +164,7 @@ def train(config: DictConfig):
 
     corpus = data_module.corpus
     print(f"N lemma scripts: {len(corpus.script_counter)}")
-    print(f"N morph tags: {len(corpus.morph_tag_vocab) - 1}")
+    print(f"N morph tags: {len(corpus.morph_tag_vocab)}")
     print(f"N morph cats: {len(corpus.morph_cat_vocab)}")
 
     # *==========================================================================
@@ -169,6 +172,8 @@ def train(config: DictConfig):
     # *==========================================================================
     print(f"\n{timer.time()} | MODEL SETUP")
 
+    # Convert warmup steps defined as percentage of total training steps
+    # to a usable integer
     if (
         config["model"].get("n_warmup_steps", False)
         and config["model"]["n_warmup_steps"] <= 1.0
@@ -197,7 +202,7 @@ def train(config: DictConfig):
             token_pad_idx=corpus.token_vocab[corpus.pad_token],
             pretrained_embedding_dim=corpus.pretrained_embeddings_dim,
             n_lemma_scripts=len(corpus.script_counter),
-            n_morph_tags=len(corpus.morph_tag_vocab) - 1,
+            n_morph_tags=len(corpus.morph_tag_vocab),
             n_morph_cats=len(corpus.morph_cat_vocab),
             preprocessor_kwargs=config.preprocessor,
             **config["model"],
@@ -206,7 +211,9 @@ def train(config: DictConfig):
     elif config["architecture"].lower() == "udify":
         model = UDIFY(
             len_char_vocab=len(corpus.char_vocab),
+            idx_char_unk=corpus.char_vocab[corpus.unk_token],
             idx_char_pad=corpus.char_vocab[corpus.pad_token],
+            idx_token_unk=corpus.token_vocab[corpus.unk_token],
             idx_token_pad=corpus.token_vocab[corpus.pad_token],
             n_lemma_scripts=len(corpus.script_counter),
             n_morph_tags=len(corpus.morph_tag_vocab),
@@ -277,11 +284,25 @@ def train(config: DictConfig):
     if config.get("sanity_check", False):
         print(f"\n{timer.time()} | SANITY CHECK")
 
-        trainer.validate(model, datamodule=data_module, verbose=True)
+        trainer.validate(
+            model,
+            dataloaders=data_module.val_dataloader(
+                **config["data"]["dataloader_kwargs"]
+            ),
+            verbose=True,
+        )
 
     print(f"\n{timer.time()} | TRAINING")
 
-    trainer.fit(model, datamodule=data_module)
+    trainer.fit(
+        model,
+        train_dataloaders=data_module.train_dataloader(
+            **config["data"]["dataloader_kwargs"]
+        ),
+        val_dataloaders=data_module.val_dataloader(
+            **config["data"]["dataloader_kwargs"]
+        ),
+    )
 
     # *==========================================================================
     # *Test
@@ -302,7 +323,13 @@ def train(config: DictConfig):
             model.freeze()
             model.eval()
 
-        test_result = trainer.test(model, datamodule=data_module, verbose=True)
+        test_result = trainer.test(
+            model,
+            datamodule=data_module.test_dataloader(
+                **config["data"]["dataloader_kwargs"]
+            ),
+            verbose=True,
+        )
 
         timer.end()
 
