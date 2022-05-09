@@ -854,7 +854,9 @@ class UDIFY(JointTaggerLemmatizer):
                     dropouts[k] = transformer_dropout
             self.config.__dict__.update(dropouts)
 
-        self.transformer = AutoModel.from_pretrained(transformer_name, config=self.config)
+        self.transformer = AutoModel.from_pretrained(
+            transformer_name, config=self.config
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(transformer_name, use_fast=True,)
 
         self.char_mask = SequenceMask(
@@ -951,8 +953,8 @@ class UDIFY(JointTaggerLemmatizer):
             self.lemma_layer_attn,
             self.lemma_token_dropout,
             self.lemma_lstm,
-            self.morph_token_dropout,
             self.morph_layer_attn,
+            self.morph_token_dropout,
             self.morph_lstm,
             self.lemma_clf,
             self.morph_clf_unf,
@@ -1340,11 +1342,37 @@ class UDIFYFineTune(UDIFY):
         self.n_warmup_steps = n_warmup_steps
 
         # Freeze the transformer
-        self.transformer.eval()
         for param in self.transformer.parameters():
             param.requires_grad = False
 
+        # Reset the RNNs
+
+        self.lemma_layer_attn = LayerAttention(
+            **model_state_dict["hyper_parameters"]["layer_attn_kwargs"]
+        )
+
+        self.lemma_token_dropout = nn.Dropout(
+            p=model_state_dict["hyper_parameters"]["token_embeddings_dropout"]
+        )
+
+        self.lemma_lstm = ResidualRNN(
+            **model_state_dict["hyper_parameters"]["rnn_kwargs"]
+        )
+
+        self.morph_layer_attn = LayerAttention(
+            **model_state_dict["hyper_parameters"]["layer_attn_kwargs"]
+        )
+
+        self.morph_token_dropout = nn.Dropout(
+            p=model_state_dict["hyper_parameters"]["token_embeddings_dropout"]
+        )
+
+        self.morph_lstm = ResidualRNN(
+            **model_state_dict["hyper_parameters"]["rnn_kwargs"]
+        )
+
         # Reset the classifiers
+
         self.lemma_clf = nn.Sequential(
             ResidualMLP(
                 in_features=self._lemma_in_features,
@@ -1377,12 +1405,13 @@ class UDIFYFineTune(UDIFY):
 
     def _trainable_modules(self):
         return [
-            self.token_embed_dropout,
+            self.transformer,
             self.c2w,
-            self.char_embed_dropout,
             self.lemma_layer_attn,
+            self.lemma_token_dropout,
             self.lemma_lstm,
             self.morph_layer_attn,
+            self.morph_token_dropout,
             self.morph_lstm,
             self.lemma_clf,
             self.morph_clf_unf,
@@ -1487,7 +1516,9 @@ class DogTagSmall(JointTaggerLemmatizer):
             attention_dropout=transformer_dropout,
         )
         self.h_dim = self.config.hidden_size
-        self.transformer = AutoModel.from_pretrained(self.transformer_name, config=self.config)
+        self.transformer = AutoModel.from_pretrained(
+            self.transformer_name, config=self.config
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.transformer_name, use_fast=True
         )
@@ -1606,20 +1637,24 @@ class DogTagSmall(JointTaggerLemmatizer):
 
         rest_optimizer = optim.AdamW(lrs, **self.optim_kwargs)
 
-        rest_scheduler =  MultiStepLR(rest_optimizer, **self.scheduler_kwargs)
+        rest_scheduler = InvSqrtWithLinearWarmupScheduler(
+            rest_optimizer,
+            default_lrs=transformer_lrs,
+            n_warmup_steps=self.n_warmup_steps,
+        )
 
         if self.transformer_lrs is not None:
             return (
                 [transformer_optimizer, rest_optimizer],
                 [
                     {"scheduler": transformer_scheduler, "interval": "step"},
-                    {"scheduler": rest_scheduler, "interval": "epoch"},
+                    {"scheduler": rest_scheduler, "interval": "step"},
                 ],
             )
         else:
             return (
                 [rest_optimizer],
-                [{"scheduler": rest_scheduler, "interval": "epoch"}],
+                [{"scheduler": rest_scheduler, "interval": "step"}],
             )
 
     def lr_scheduler_step(self, scheduler, optimizer_idx, metric):
@@ -1943,7 +1978,9 @@ class DogTag(JointTaggerLemmatizer):
             attention_dropout=transformer_dropout,
         )
         self.h_dim = self.config.hidden_size
-        self.transformer = AutoModel.from_pretrained(self.transformer_name, config=self.config)
+        self.transformer = AutoModel.from_pretrained(
+            self.transformer_name, config=self.config
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.transformer_name, use_fast=True
         )
@@ -1982,14 +2019,15 @@ class DogTag(JointTaggerLemmatizer):
             nn.Linear(in_features=self._lemma_input_dim, out_features=n_lemma_scripts),
         )
 
+        self._morph_input_dim = 2 * self.h_dim
         self.morph_unf_clf = nn.Sequential(
-            ResidualMLP(in_features=self.h_dim, out_features=self.h_dim,),
-            nn.Linear(in_features=self.h_dim, out_features=self.n_morph_tags),
+            ResidualMLP(in_features=self._morph_input_dim, out_features=self._morph_input_dim,),
+            nn.Linear(in_features=self._morph_input_dim, out_features=self.n_morph_tags),
         )
 
         self.morph_fac_clf = nn.Sequential(
-            ResidualMLP(in_features=self.h_dim, out_features=self.h_dim,),
-            nn.Linear(in_features=self.h_dim, out_features=self.n_morph_cats),
+            ResidualMLP(in_features=self._morph_input_dim, out_features=self._morph_input_dim,),
+            nn.Linear(in_features=self._morph_input_dim, out_features=self.n_morph_cats),
         )
 
         # ==========================================================================
@@ -2207,10 +2245,14 @@ class DogTag(JointTaggerLemmatizer):
 
         # Morph classification =========================================================
 
-        morph_unf_logits = self.morph_unf_clf(token_contextual_embeddings)
+        morph_unf_logits = self.morph_unf_clf(
+            torch.cat([token_embeddings, token_contextual_embeddings], dim=-1)
+        )
 
         if not skip_morph_reg:
-            morph_fac_logits = self.morph_fac_clf(token_contextual_embeddings)
+            morph_fac_logits = self.morph_fac_clf(
+                torch.cat([token_embeddings, token_contextual_embeddings], dim=-1)
+            )
 
             return lemma_logits, morph_unf_logits, morph_fac_logits
 

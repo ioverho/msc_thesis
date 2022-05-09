@@ -1,0 +1,8 @@
+# @package _global_
+
+tgt_lang: ar
+
+treebank_data_module_file_path: ./morphological_tagging/data/corpora/Arabic_merge_0.2_False.pickle
+
+model:
+  tagger_checkpoint_file_path: ./morphological_tagging/checkpoints/UDPipe2_Arabic_merge/version_1/checkpoints/last.ckpt

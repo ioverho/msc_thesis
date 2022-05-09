@@ -19,6 +19,10 @@ data:
   len_sorted: True
   batch_size: 32
   source: ./morphological_tagging/data/um-treebanks-v2.9
+  dataloader_kwargs:
+    use_pytorch: False
+    max_tokens: 5000
+    max_batch_size: 512
 
 trainer:
   precision: 16

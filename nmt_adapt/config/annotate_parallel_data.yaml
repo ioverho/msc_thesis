@@ -1,0 +1,30 @@
+defaults:
+  - _self_
+  - data: flores
+
+print_hparams: True
+
+gpu: 1
+seed: 610
+deterministic: True
+
+model:
+  architecture: udpipe2
+
+batch_size: 128
+
+data:
+  src_lang: English
+  tgt_lang: Czech
+  dataset_name: tatoeba
+  source: None
+  split: train
+  filter_unique_texts: True
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .

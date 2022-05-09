@@ -1,0 +1,8 @@
+# @package _global_
+
+tgt_lang: fr
+
+treebank_data_module_file_path: ./morphological_tagging/data/corpora/French_merge_0.2_False.pickle
+
+model:
+  tagger_checkpoint_file_path: ./morphological_tagging/checkpoints/UDPipe2_French_merge/version_1/checkpoints/last.ckpt

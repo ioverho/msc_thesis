@@ -1,26 +1,23 @@
 import os
-import warnings
-import yaml
-from pathlib import Path
+import math
 
 # 3rd Party
 import torch
-from torch.utils.data import DataLoader
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import pycountry
 
 # User-defined
-from nmt_evaluation.data.corpus import ParallelTreebankCorpus
-from morphological_tagging.models import UDPipe2
-from utils.experiment import set_seed, set_deterministic, Timer, progressbar, HidePrints
-from utils.errors import ConfigurationError
+from morphological_tagging.pipelines import UDPipe2Pipeline
+from nmt_adapt.data.corpus import ParallelTreebankCorpus, AnnotatedSentence
+from utils.tokenizers import MosesTokenizerWrapped
+from utils.experiment import set_seed, set_deterministic, Timer, progressbar
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
-@hydra.main(config_path="./nmt_evaluation/config", config_name="data_annotation")
+@hydra.main(config_path="./nmt_adapt/config", config_name="data_annotation")
 def annotate(config: DictConfig):
     """Annotation loop.
 
@@ -59,9 +56,6 @@ def annotate(config: DictConfig):
     if config["deterministic"]:
         set_deterministic()
 
-    # *==========================================================================
-    # * Dataset
-    # *==========================================================================
     print(f"\n{timer.time()} | DATA SETUP")
     par_data = ParallelTreebankCorpus(
         src_lang=config["src_lang"], tgt_lang=config["tgt_lang"]
@@ -79,63 +73,69 @@ def annotate(config: DictConfig):
         print("Loading in the Flores101 testset.")
         par_data.load_flores_dataset(**config["parallel_dataset"]["flores"])
 
-    par_data.load_vocabs_from_treebankdatamodule_checkpoint(
-        fp=config["treebank_data_module_file_path"]
+    print(f"\n{timer.time()} | MODEL IMPORT")
+    lang_full = pycountry.languages.get(alpha_2=config["tgt_lang"]).name
+    expected_pipeline_path = (
+        f"./morphological_tagging/pipelines/UDPipe2_{lang_full}_merge.ckpt"
     )
+    print(f"Looking for pipeline in {expected_pipeline_path}")
 
-    # *==========================================================================
-    # * Model
-    # *==========================================================================
-    print(f"\n{timer.time()} | MODEL SETUP")
+    pipeline = UDPipe2Pipeline.load(expected_pipeline_path)
 
-    if config["model"]["architecture"].lower() == "udpipe2":
-        if config["model"].get("tagger_checkpoint_file_path", False):
-            fp = config["model"]["tagger_checkpoint_file_path"]
-        else:
-            lang_full = pycountry.languages.get(alpha_2=config["tgt_lang"]).name
-            fp = f"./morphological_tagging/checkpoints/UDPipe2_{lang_full}_merge/version_1/checkpoints/last.ckpt"
+    pipeline.tagger.eval()
+    for param in pipeline.parameters():
+        param.requires_grad = False
+    pipeline = pipeline.to(device)
 
-        model = UDPipe2.load_from_checkpoint(fp, map_location=device)
+    pipeline.add_tokenizer(MosesTokenizerWrapped(lang=config["tgt_lang"]))
 
-    else:
-        raise NotImplementedError(
-            "Architecture {config['architecture'].lower()} not recognized."
+    print(f"\n{timer.time()} | ANNOTATING")
+    batch_size = config["batch_size"]
+
+    n_batches = math.ceil(len(par_data.parallel_dataset) / batch_size)
+    for i in progressbar(range(n_batches), prefix="Annotating", size=80):
+
+        actual_batch_size = (
+            min((i + 1) * batch_size, len(par_data.parallel_dataset)) - i * batch_size
         )
 
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-    model = model.to(device)
+        batch = [
+            [
+                par_data.parallel_dataset[ii]["source"],
+                par_data.parallel_dataset[ii]["id"],
+                par_data.parallel_dataset[ii][config["src_lang"]],
+                pipeline.tokenizer(par_data.parallel_dataset[ii][config["tgt_lang"]]),
+            ]
+            for ii in range(i * batch_size, i * batch_size + actual_batch_size,)
+        ]
 
-    # *==========================================================================
-    # * Annotation
-    # *==========================================================================
-    print(f"\n{timer.time()} | ANNOTATING")
-    data_loader = DataLoader(
-        par_data.parallel_dataset,
-        batch_size=config["batch_size"],
-        drop_last=False,
-        shuffle=False,
-        collate_fn=par_data.collate_for_tagger,
-    )
+        sources, ids, src_text, tgt_tokens = list(map(list, zip(*batch)))
+        lemmas, lemma_scripts, morph_tags, morph_cats = pipeline(
+            tgt_tokens, is_pre_tokenized=True
+        )
 
-    for ids, sources, par_texts, batch in progressbar(
-        data_loader, prefix="Annotating", size=80
-    ):
-
-        lemma_preds, morph_preds = model.pred_step(batch)
-
-        with HidePrints():
-            par_data.parse_sent_from_preds(
-                ids, sources, par_texts, batch, lemma_preds, morph_preds
+        annotated_sents = [
+            AnnotatedSentence(
+                source_file=sources[ii],
+                id=ids[ii],
+                parallel_text=src_text[ii],
+                tokens=tgt_tokens[ii],
+                lemmas=lemmas[ii],
+                lemma_scripts=lemma_scripts[ii],
+                morph_tags=morph_tags[ii],
+                morph_cats=morph_cats[ii],
             )
+            for ii in range(actual_batch_size)
+        ]
+
+        par_data.extend(annotated_sents)
 
     print(f"Annotated {len(par_data)} sentences.")
 
     print(f"\n{timer.time()} | SAVING ANNOTATED PARALLEL DATASET FILE")
     save_path = (
-        f"./nmt_evaluation/data/corpora/{par_data.src_lang}"
-        + f"_{par_data.tgt_lang}.pickle"
+        f"./nmt_adapt/data/corpora/annotated_test_sets/{par_data.src_lang}"
+        + f"_{par_data.tgt_lang}_{config['affix']}.pickle"
     )
     print(f"Saving to {save_path}")
     par_data.save(fp=save_path)

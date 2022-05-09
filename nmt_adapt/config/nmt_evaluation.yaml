@@ -1,0 +1,50 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+print_hparams: True
+
+gpu: 1
+seed: 610
+deterministic: True
+
+src_lang: English
+tgt_lang: Czech
+
+max_batch_size: 128
+n_samples: 24
+sampling_method: top-p
+max_over_T: 5
+sampling_method_kwargs:
+  top_p: 0.90
+
+save_every_n: 250
+
+data:
+  dataset_name: ataman_multidomain
+  split: train
+
+index:
+  max_tag_samples: 1000
+  min_tag_samples: 32
+  index_level: tag_set
+  filter_level: lemma
+  stratified: false
+  fp: ./nmt_adapt/data/indices/ataman_multidomain_english_czech_train.pickle
+#  index_filter_vals:
+#    - N
+#    - ADJ
+#    - AUX
+#    - V
+#    - ADV
+
+prefix: ""
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .

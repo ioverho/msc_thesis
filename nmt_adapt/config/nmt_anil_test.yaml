@@ -1,0 +1,62 @@
+defaults:
+  - default_train
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+experiment_name: nmt_adapt_test
+
+debug: False
+gpu: 0
+sanity_check: true
+
+epochs: 100
+steps_per_epoch: 100
+
+logging:
+  logger_kwargs:
+    job_type: test
+
+data:
+  src_lang: english
+  tgt_lang: czech
+  dataset_name: ataman_multidomain
+
+index:
+  fp: null
+  index_level: tag_set
+  filter_level: script
+  reduce:
+    max_samples: 1000
+    min_samples: 0
+    min_lemmas: 2
+    min_samples_per_lemma: 2
+
+task_sampler:
+  eval_fp: "./nmt_adapt/eval/220426_1444_English_Czech.pickle"
+  filter_level: script
+
+trainer:
+  model_name: "Helsinki-NLP/opus-mt-en-cs"
+  meta_learner_algorithm: "anil"
+  inner_lr: 5e-4
+  meta_optimizer_algorithm: adamw
+  meta_lr: 1e-5
+  meta_optimizer_kwargs:
+    weight_decay: 1.0e-2
+  meta_optimizer_scheduler: inv_sqrt
+  meta_optimizer_scheduler_kwargs:
+    n_warmup_steps: 0.04
+  train_meta_batchsize: 16
+  valid_meta_batchsize: 128
+  train_k: 1
+  valid_k: 1
+  first_order_epochs: 0
+  grad_clip_val: 2.0
+
+data_loader:
+  mode: cross_transfer
+  n_lemmas_per_task: 2
+  n_samples_per_lemma: 4
+  p_full_nmt: 0.1
+  p_uninformed: 0.1

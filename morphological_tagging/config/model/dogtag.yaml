@@ -3,7 +3,7 @@ transformer_dropout: 0.2
 embedding_dropout: 0.5
 mha_kwargs:
   n_heads: 16
-  dropout: 0.2
+  dropout: 0.25
 rnn_kwargs:
   num_layers: 3
   residual: True
@@ -11,15 +11,15 @@ rnn_kwargs:
   rnn_type: "lstm"
   bidirectional: True
 label_smoothing: 0.03
-mask_p: 0.0
-transformer_lrs: null
-#  char_embeddings: 1.0e-5
-#  initial_char_encoder: 1.0e-5
-#  chars_to_molecules: 1.0e-5
-#  encoder: 5.0e-5
-#  projection: 1.0e-4
-#  final_char_encoder: 1.0e-4
-#  pooler: 1.0e-4
+mask_p: 0.10
+transformer_lrs:
+  char_embeddings: 0.0
+  initial_char_encoder: 5.0e-6
+  chars_to_molecules: 5.0e-6
+  encoder: 1.0e-5
+  projection: 5.0e-5
+  final_char_encoder: 5.0e-5
+  pooler: 5.0e-5
 rnn_lr: 1.0e-3
 clf_lr: 2.5e-3
 n_warmup_steps: 0.04
