@@ -7,7 +7,7 @@ defaults:
 experiment_name: nmt_adapt_test
 
 debug: False
-gpu: 0
+gpu: 1
 sanity_check: true
 
 epochs: 100
@@ -23,14 +23,17 @@ data:
   dataset_name: ataman_multidomain
 
 index:
-  fp: null
+  fp: "./nmt_adapt/data/indices/ataman_multidomain_english_czech"
+  infer_splits: True
   index_level: tag_set
   filter_level: script
-  reduce:
-    max_samples: 1000
-    min_samples: 0
-    min_lemmas: 2
-    min_samples_per_lemma: 2
+  #reduce:
+  #  max_samples: 1000
+  #  min_samples: 0
+  #  min_lemmas: 2
+  #  min_samples_per_lemma: 2
+  filter:
+    - "_"
 
 task_sampler:
   eval_fp: "./nmt_adapt/eval/220426_1444_English_Czech.pickle"
@@ -48,7 +51,7 @@ trainer:
   meta_optimizer_scheduler_kwargs:
     n_warmup_steps: 0.04
   train_meta_batchsize: 16
-  valid_meta_batchsize: 128
+  valid_meta_batchsize: 256
   train_k: 1
   valid_k: 1
   first_order_epochs: 0
@@ -56,7 +59,8 @@ trainer:
 
 data_loader:
   mode: cross_transfer
-  n_lemmas_per_task: 2
-  n_samples_per_lemma: 4
+  n_lemmas_per_task: 4
+  n_samples_per_lemma: 8
   p_full_nmt: 0.1
   p_uninformed: 0.1
+  eval_uninformed: False

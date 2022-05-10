@@ -116,7 +116,8 @@ def train(config: DictConfig):
 
         # TODO: figure out when fork is needed
         wandb.init(
-            # settings=wandb.Settings(start_method="fork"),
+            #settings=wandb.Settings(start_method="fork"),
+            settings=wandb.Settings(start_method="thread"),
             **config["logging"]["logger_kwargs"],
         )
 
@@ -153,7 +154,14 @@ def train(config: DictConfig):
         split="train",
     )
     print(f"Train dataset: {len(train_dataset)}")
-    # print(f"\Valid dataset: {len(valid_dataset)}")
+
+    valid_dataset = load_custom_dataset(
+        src_lang=config["data"]["src_lang"],
+        tgt_lang=config["data"]["tgt_lang"],
+        dataset_name=config["data"]["dataset_name"],
+        split="test",
+    )
+    print(f"\Valid dataset: {len(valid_dataset)}")
 
     # ==============================================================================
     # Index
@@ -161,22 +169,48 @@ def train(config: DictConfig):
     print(f"\n{timer.time()} | BUILDING INDEX" + "\n" + "+" * 50)
 
     if config["index"].get("fp", None) is None:
-        index = InverseIndexv2(
+        train_index = InverseIndexv2(
             par_data=train_dataset,
             index_level=config["index"]["index_level"],
             filter_level=config["index"]["filter_level"],
         )
         print("Built index.")
-        print(index.length_str)
+        print(train_index.length_str)
+
+    elif config["index"].get("infer_splits", False):
+        train_index_fp = config["index"]["fp"] + "_train.pickle"
+        train_index = InverseIndexv2.load(train_index_fp)
+        print(f"Loaded index from {train_index_fp}.")
+
+        valid_index_fp = config["index"]["fp"] + "_valid.pickle"
+        valid_index = InverseIndexv2.load(valid_index_fp)
+        print(f"Loaded index from {valid_index_fp}.")
+
+        print(train_index.length_str)
+        print(valid_index.length_str)
 
     else:
-        index = InverseIndexv2.load(config["index"]["fp"])
+        train_index_fp = config["index"]["fp"] + "_train.pickle"
+        train_index = InverseIndexv2.load(train_index_fp)
+        print(f"Loaded index from {train_index_fp}.")
+        print(train_index.length_str)
 
     if config["index"].get("reduce", None) is not None:
-        index.reduce(**config["index"]["reduce"])
-        print(index.length_str)
+        train_index.reduce(**config["index"]["reduce"])
+        print("\nReduced index.")
+        print(train_index.length_str)
+        print(valid_index.length_str)
 
-    print(f"Document coverage of {index.coverage}/{len(train_dataset)}")
+    if config["index"].get("filter", None) is not None:
+        for filter_val in config["index"]["filter"]:
+            train_index.filter(lambda k, f_val=filter_val: not k.contains(f_val))
+            valid_index.filter(lambda k, f_val=filter_val: not k.contains(f_val))
+        print(f"\nFiltered out any keys containing {config['index']['filter']}.")
+        print(train_index.length_str)
+        print(valid_index.length_str)
+
+    print(f"Document coverage of train data: {train_index.coverage}/{len(train_dataset)}")
+    print(f"Document coverage of train data: {train_index.coverage}/{len(train_dataset)}")
 
     # ==============================================================================
     # Task Sampler
@@ -188,9 +222,13 @@ def train(config: DictConfig):
     )
     print(f"Built confusion matrix from evaluation results.")
 
-    task_sampler = TaskSampler(index)
-    task_sampler.set_weights(confusion_matrix)
-    print(f"Built task sampler: {task_sampler.length_str}")
+    train_task_sampler = TaskSampler(train_index)
+    train_task_sampler.set_weights(confusion_matrix)
+    print(f"Built train task sampler: {train_task_sampler.length_str}")
+
+    valid_task_sampler = TaskSampler(valid_index)
+    valid_task_sampler.set_weights(confusion_matrix)
+    print(f"Built valid task sampler: {valid_task_sampler.length_str}")
 
     # ==============================================================================
     # Trainer & Dataloader
@@ -205,20 +243,28 @@ def train(config: DictConfig):
     print(f"Parameters: {round(meta_trainer.model.num_parameters()/1e+6, 1)}M")
     print(f"Device: {next(meta_trainer.model.parameters()).device}")
 
-    meta_data_loader = MetaDataLoader(
+    meta_train_data_loader = MetaDataLoader(
         train_dataset,
-        index,
-        task_sampler,
+        train_index,
+        train_task_sampler,
+        meta_trainer.tokenizer,
+        **config["data_loader"],
+    )
+
+    meta_valid_data_loader = MetaDataLoader(
+        valid_dataset,
+        valid_index,
+        valid_task_sampler,
         meta_trainer.tokenizer,
         **config["data_loader"],
     )
 
     print(f"\nBuilt dataloader")
     print(
-        f"Max batchsize: {meta_data_loader.n_lemmas_per_task * meta_data_loader.n_samples_per_lemma}"
+        f"Max batchsize: {meta_train_data_loader.n_lemmas_per_task * meta_train_data_loader.n_samples_per_lemma}"
     )
-    print(f"Probability of full NMT: {meta_data_loader.p_full_nmt}")
-    print(f"Probability of uniform partial NMT: {meta_data_loader.p_uninformed}")
+    print(f"Probability of full NMT: {meta_train_data_loader.p_full_nmt}")
+    print(f"Probability of uniform partial NMT: {meta_train_data_loader.p_uninformed}")
 
     wandb.watch(meta_trainer.model)
 
@@ -231,7 +277,7 @@ def train(config: DictConfig):
     if config.get("sanity_check", False):
         print(f"\n{timer.time()} | SANITY CHECK" + "\n" + "+" * 50)
 
-        valid_logs = meta_trainer.eval_step(meta_data_loader, batch_size=4)
+        valid_logs = meta_trainer.eval_step(meta_valid_data_loader, batch_size=4, split="sanity_check")
         wandb.log(valid_logs)
 
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
@@ -241,13 +287,16 @@ def train(config: DictConfig):
         for step in progressbar(
             range(config["steps_per_epoch"]), prefix=f"Epoch {epoch:03} |", size=100
         ):
-            loss, train_logs = meta_trainer.train_step(meta_data_loader)
+            loss, logs = meta_trainer.train_step(meta_train_data_loader)
 
-            train_logs = meta_trainer.optimize(loss, train_logs)
-            wandb.log(train_logs)
+            logs = meta_trainer.optimize(loss, logs)
+            wandb.log(logs)
 
-        valid_logs = meta_trainer.eval_step(meta_data_loader)
-        wandb.log(valid_logs)
+        logs = meta_trainer.eval_step(meta_train_data_loader, split="train")
+        wandb.log(logs)
+
+        logs = meta_trainer.eval_step(meta_valid_data_loader, split="valid")
+        wandb.log(logs)
 
         torch.save(
             meta_trainer.model.state_dict(),

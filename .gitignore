@@ -133,3 +133,4 @@ vscode/
 *.pickle
 /maml_test/*
 maml_test.ipynb
+*.ckpt

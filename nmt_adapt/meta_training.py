@@ -15,23 +15,37 @@ from utils.errors import ConfigurationError
 
 
 class MetaDataLoader(object):
-    """_summary_
+    """Class that controls the task sampling, episode generation and data loading.
+
+    The function takes in a dataset, an index, a task sampler, a tokenizer, the number of lemmas per
+    task, the number of samples per lemma, a loading mode, the probability of using the full NMT objective,
+    and the probability of uninformed sampling.
 
     Args:
-        object (_type_): _description_
+        dataset:
+        index: a dictionary mapping lemmas to their indices in the dataset
+        task_sampler: a function that takes a list of tasks and returns a task
+        tokenizer: a tokenizer object
+        n_lemmas_per_task: int,
+        n_samples_per_lemma: int,
+        mode: str = "cross_transfer", the episode generation mode. Defaults to cross_transfer
+        p_full_nmt: float = 0.0,
+        p_uninformed: float = 0.0,
+        eval_uninformed: bool = False, whether or not to evaluate using uniform task distribution
     """
 
     def __init__(
         self,
         dataset,
         index,
-        task_sampler,
         tokenizer,
-        n_lemmas_per_task: int,
-        n_samples_per_lemma: int,
+        task_sampler,
+        n_lemmas_per_task: int = 2,
+        n_samples_per_lemma: int = 1,
         mode: str = "cross_transfer",
         p_full_nmt: float = 0.0,
         p_uninformed: float = 0.0,
+        eval_uninformed: bool = False,
     ):
 
         self.dataset = dataset
@@ -39,7 +53,10 @@ class MetaDataLoader(object):
         self.task_sampler = task_sampler
         self.tokenizer = tokenizer
 
-        self.n_lemmas_per_task = n_lemmas_per_task
+        if self.n_lemmas_per_task < 2 and mode == "cross_transfer":
+            raise ValueError("Number of lemmas per task must be at least 2 for cross_transfer.")
+        else:
+            self.n_lemmas_per_task = n_lemmas_per_task
         self.n_samples_per_lemma = n_samples_per_lemma
 
         if mode in {"cross_transfer"}:
@@ -49,6 +66,8 @@ class MetaDataLoader(object):
 
         self.p_full_nmt = p_full_nmt
         self.p_uninformed = p_uninformed
+
+        self.eval_uninformed = eval_uninformed
 
         self.training = True
 
@@ -232,7 +251,7 @@ class MetaDataLoader(object):
     def _train_batch(self):
         p_obj = random.random()
 
-        if p_obj <= self.p_full_nmt:
+        if p_obj <= self.p_full_nmt or self.task_sampler is None:
 
             full_nmt = True
             objective = "full"
@@ -280,7 +299,7 @@ class MetaDataLoader(object):
     def _eval_batch(self):
 
         # Sample from task sampler
-        t1, t2 = self.task_sampler.sample_tasks(informed=False)
+        t1, t2 = self.task_sampler.sample_tasks(informed=(not self.eval_uninformed))
 
         support_batch, query_batch = self._cross_transfer_batches(t1, t2)
 
@@ -539,7 +558,7 @@ class MetaTrainer(object):
 
         logs = defaultdict(list)
 
-        meta_batch_loss = torch.tensor(0.0)
+        meta_batch_loss = torch.tensor(0.0, device=self.meta_learner.device)
         for _ in range(self.train_meta_batchsize):
 
             # Get data
@@ -637,9 +656,11 @@ class MetaTrainer(object):
     def eval_step(
         self, data_loader, split: str = "valid", batch_size: typing.Optional[int] = None
     ):
+
         @torch.no_grad()
         def get_rel_nrl_loss(model, src_inputs, tgt_inputs, labels, labels_part):
-            """Computes the NMT loss of a model (adapted or not) on the entire sentence, returning losses for both the relevant tokens, and the non-relevant tokens.
+            """Computes the NMT loss of a model (adapted or not) on the entire sentence,
+            returning losses for both the relevant tokens, and the non-relevant tokens.
 
             Args:
                 model (_type_): _description_
