@@ -134,3 +134,5 @@ vscode/
 /maml_test/*
 maml_test.ipynb
 *.ckpt
+evaluation2.ipynb
+workspace.code-workspace

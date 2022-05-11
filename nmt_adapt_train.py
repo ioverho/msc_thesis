@@ -161,7 +161,7 @@ def train(config: DictConfig):
         dataset_name=config["data"]["dataset_name"],
         split="test",
     )
-    print(f"\Valid dataset: {len(valid_dataset)}")
+    print(f"Valid dataset: {len(valid_dataset)}")
 
     # ==============================================================================
     # Index
@@ -182,7 +182,7 @@ def train(config: DictConfig):
         train_index = InverseIndexv2.load(train_index_fp)
         print(f"Loaded index from {train_index_fp}.")
 
-        valid_index_fp = config["index"]["fp"] + "_valid.pickle"
+        valid_index_fp = config["index"]["fp"] + "_test.pickle"
         valid_index = InverseIndexv2.load(valid_index_fp)
         print(f"Loaded index from {valid_index_fp}.")
 
@@ -209,8 +209,8 @@ def train(config: DictConfig):
         print(train_index.length_str)
         print(valid_index.length_str)
 
-    print(f"Document coverage of train data: {train_index.coverage}/{len(train_dataset)}")
-    print(f"Document coverage of train data: {train_index.coverage}/{len(train_dataset)}")
+    print(f"Document coverage of train data: {train_index.coverage}/{len(train_dataset)} {train_index.coverage/len(train_dataset)*100:.2f}[%]")
+    print(f"Document coverage of train data: {valid_index.coverage}/{len(valid_dataset)} {valid_index.coverage/len(valid_dataset)*100:.2f}[%]")
 
     # ==============================================================================
     # Task Sampler
@@ -244,18 +244,18 @@ def train(config: DictConfig):
     print(f"Device: {next(meta_trainer.model.parameters()).device}")
 
     meta_train_data_loader = MetaDataLoader(
-        train_dataset,
-        train_index,
-        train_task_sampler,
-        meta_trainer.tokenizer,
+        dataset=train_dataset,
+        index=train_index,
+        tokenizer=meta_trainer.tokenizer,
+        task_sampler=train_task_sampler,
         **config["data_loader"],
     )
 
     meta_valid_data_loader = MetaDataLoader(
-        valid_dataset,
-        valid_index,
-        valid_task_sampler,
-        meta_trainer.tokenizer,
+        dataset=valid_dataset,
+        index=valid_index,
+        tokenizer=meta_trainer.tokenizer,
+        task_sampler=valid_task_sampler,
         **config["data_loader"],
     )
 
@@ -284,8 +284,9 @@ def train(config: DictConfig):
 
     for epoch in range(config["epochs"]):
 
+        print(f"\nEpoch {epoch:04}")
         for step in progressbar(
-            range(config["steps_per_epoch"]), prefix=f"Epoch {epoch:03} |", size=100
+            range(config["steps_per_epoch"]), prefix=f"Epoch {epoch:03} |", size=10
         ):
             loss, logs = meta_trainer.train_step(meta_train_data_loader)
 

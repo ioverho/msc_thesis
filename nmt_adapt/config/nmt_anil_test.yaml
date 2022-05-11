@@ -11,7 +11,7 @@ gpu: 1
 sanity_check: true
 
 epochs: 100
-steps_per_epoch: 100
+steps_per_epoch: 250
 
 logging:
   logger_kwargs:
@@ -50,7 +50,7 @@ trainer:
   meta_optimizer_scheduler: inv_sqrt
   meta_optimizer_scheduler_kwargs:
     n_warmup_steps: 0.04
-  train_meta_batchsize: 16
+  train_meta_batchsize: 8
   valid_meta_batchsize: 256
   train_k: 1
   valid_k: 1

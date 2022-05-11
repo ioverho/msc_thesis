@@ -53,7 +53,7 @@ class MetaDataLoader(object):
         self.task_sampler = task_sampler
         self.tokenizer = tokenizer
 
-        if self.n_lemmas_per_task < 2 and mode == "cross_transfer":
+        if n_lemmas_per_task < 2 and mode == "cross_transfer":
             raise ValueError("Number of lemmas per task must be at least 2 for cross_transfer.")
         else:
             self.n_lemmas_per_task = n_lemmas_per_task
