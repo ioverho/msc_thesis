@@ -868,4 +868,7 @@ class MetaTrainer(object):
 
         logs["global_step"] = self.global_step
 
+        logs[f"{split}/query_harmonic_mean"] = (2 * logs[f"{split}/query_pre_loss/rel"] * logs[f"{split}/query_pre_loss/nrl"]) / \
+            (logs[f"{split}/query_pre_loss/rel"] + logs[f"{split}/query_pre_loss/nrl"])
+
         return logs

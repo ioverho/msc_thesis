@@ -118,10 +118,9 @@ def train(config: DictConfig):
         wandb.init(
             #settings=wandb.Settings(start_method="fork"),
             settings=wandb.Settings(start_method="thread"),
+            config=OmegaConf.to_container(config),
             **config["logging"]["logger_kwargs"],
         )
-
-        wandb.config = config
 
     else:
         raise ConfigurationError("Logger not recognized.")
@@ -282,27 +281,47 @@ def train(config: DictConfig):
 
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
 
+    best_loss = 0.0
+
     for epoch in range(config["epochs"]):
 
-        print(f"\nEpoch {epoch:04}")
+        print(f"\n{timer.time()} | Epoch {epoch:04}")
         for step in progressbar(
             range(config["steps_per_epoch"]), prefix=f"Epoch {epoch:03} |", size=10
         ):
             loss, logs = meta_trainer.train_step(meta_train_data_loader)
 
             logs = meta_trainer.optimize(loss, logs)
+            logs["epoch"] = epoch
             wandb.log(logs)
 
         logs = meta_trainer.eval_step(meta_train_data_loader, split="train")
+        logs["epoch"] = epoch
         wandb.log(logs)
+
+        print(f"Train query losses pre-adapt {logs['train/query_harmonic_mean']:.2e}")
 
         logs = meta_trainer.eval_step(meta_valid_data_loader, split="valid")
+        logs["epoch"] = epoch
         wandb.log(logs)
 
-        torch.save(
-            meta_trainer.model.state_dict(),
-            f"{CHECKPOINT_DIR}/{full_version}/checkpoints/model.ckpt",
-        )
+        print(f"Valid query losses pre-adapt {logs['valid/query_harmonic_mean']:.2e}")
+
+        # Check loss if best for early stopping/saving
+        # If first epoch, loss is immediately best recorded
+        if epoch == 0 or logs['valid/query_harmonic_mean'] <= best_loss:
+            print(f">>NEW BEST<<")
+            torch.save(
+                meta_trainer.model.state_dict(),
+                f"{CHECKPOINT_DIR}/{full_version}/checkpoints/best.ckpt",
+            )
+
+        # Check if should save latest
+        if config.get("save_every_n", None) is not None and epoch % config.get("save_every_n") == 0:
+            torch.save(
+                meta_trainer.model.state_dict(),
+                f"{CHECKPOINT_DIR}/{full_version}/checkpoints/latest.ckpt",
+            )
 
     timer.end()
 

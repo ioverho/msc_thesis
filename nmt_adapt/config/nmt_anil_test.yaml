@@ -6,9 +6,11 @@ defaults:
 
 experiment_name: nmt_adapt_test
 
+print_hparams: True
 debug: False
 gpu: 1
 sanity_check: true
+save_every_n: null
 
 epochs: 100
 steps_per_epoch: 250
@@ -42,9 +44,9 @@ task_sampler:
 trainer:
   model_name: "Helsinki-NLP/opus-mt-en-cs"
   meta_learner_algorithm: "anil"
-  inner_lr: 5e-4
+  inner_lr: 5.0e-4
   meta_optimizer_algorithm: adamw
-  meta_lr: 1e-5
+  meta_lr: 1.0e-5
   meta_optimizer_kwargs:
     weight_decay: 1.0e-2
   meta_optimizer_scheduler: inv_sqrt
@@ -59,8 +61,8 @@ trainer:
 
 data_loader:
   mode: cross_transfer
-  n_lemmas_per_task: 4
-  n_samples_per_lemma: 8
+  n_lemmas_per_task: 2
+  n_samples_per_lemma: 4
   p_full_nmt: 0.1
   p_uninformed: 0.1
   eval_uninformed: False
