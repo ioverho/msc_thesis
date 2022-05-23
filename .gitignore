@@ -136,3 +136,5 @@ maml_test.ipynb
 *.ckpt
 evaluation2.ipynb
 workspace.code-workspace
+*/translations/
+*/eval/
