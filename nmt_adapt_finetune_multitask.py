@@ -10,7 +10,7 @@ import dotenv
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import wandb
-from datasets.utils.logging import set_verbosity_error
+from datasets.utils.tqdm_utils import set_progress_bar_enabled
 
 # User-defined
 from nmt_adapt.data.corpus_functional import load_custom_dataset
@@ -65,7 +65,7 @@ def train(config: DictConfig):
 
         return config
 
-    set_verbosity_error()
+    set_progress_bar_enabled(False)
 
     timer = Timer()
 
