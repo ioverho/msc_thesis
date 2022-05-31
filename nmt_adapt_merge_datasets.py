@@ -1,6 +1,7 @@
 import numpy as np
 import datasets
 from datasets import concatenate_datasets
+from datasets.utils.tqdm_utils import set_progress_bar_enabled
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
@@ -14,6 +15,8 @@ INDICES_LOC = "./nmt_adapt/data/indices/"
 
 @hydra.main(config_path="./nmt_adapt/config", config_name="merge")
 def merge(config: DictConfig):
+
+    set_progress_bar_enabled(False)
 
     # == Reproducibility
     set_seed(config["seed"])
@@ -43,32 +46,33 @@ def merge(config: DictConfig):
     print(f"Train dataset: {len(train_dataset)}")
 
     train_dataset = train_dataset.filter(
-        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0 and \
-            abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))),
+        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0,
             with_indices=True
             )
+    print(f"Without empty strings: {len(train_dataset)}")
 
     delta_lens = [
         abs(len(tgt_tokens) - len(src_text.split(" "))) / len(src_text.split(" "))
         for tgt_tokens, src_text in zip(train_dataset["tgt_tokens"], train_dataset["src_text"])]
 
-    min_diff, max_diff = np.quantile(delta_lens, [0.001, 0.999])
+    _, max_diff = np.quantile(delta_lens, [0.001, 0.999])
 
     train_dataset = train_dataset.filter(
         lambda example, idx: abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))) \
             / len(example["src_text"].split(" ")) < max_diff,
             with_indices=True
             )
-    print(f"Filtered Train dataset: {len(train_dataset)}")
+    print(f"Removing sentences with relative lengths larger than {max_diff}")
+    print(f"Filtered train dataset: {len(train_dataset)}")
 
     test_dataset = concatenate_datasets(loaded_corpora_test, split="test")
-    print(f"Train dataset: {len(test_dataset)}")
+    print(f"\nTest dataset: {len(test_dataset)}")
 
     test_dataset = test_dataset.filter(
-        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0 and \
-            abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))),
+        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0,
             with_indices=True
             )
+    print(f"Without empty strings: {len(test_dataset)}")
 
     delta_lens = [
         abs(len(tgt_tokens) - len(src_text.split(" "))) / len(src_text.split(" "))
@@ -81,9 +85,10 @@ def merge(config: DictConfig):
             / len(example["src_text"].split(" ")) < max_diff,
             with_indices=True
             )
-    print(f"Filtered Train dataset: {len(test_dataset)}")
+    print(f"Removing sentences with relative lengths larger than {max_diff}")
+    print(f"Filtered test dataset: {len(test_dataset)}")
 
-    test_dataset.save_to_disk(
+    train_dataset.save_to_disk(
         CORPORA_LOC
         + config["agg_name"]
         + f"_{config['src_lang'].lower()}_{config['tgt_lang'].lower()}_train"

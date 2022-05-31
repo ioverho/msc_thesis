@@ -224,7 +224,6 @@ def train(config: DictConfig):
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
 
     best_loss = 0.0
-
     for epoch in range(config["epochs"]):
 
         print(f"\n{timer.time()} | Epoch {epoch:04} | Train")
@@ -241,15 +240,15 @@ def train(config: DictConfig):
         agg_eval_metrics = defaultdict(float)
         for _ in range(len(valid_dataloader)):
             valid_batch = next(valid_dataloader)
-            logs = trainer.eval_step(valid_batch)
+            logs = trainer.eval_step(valid_batch, split="valid")
 
             for k, v in logs.items():
                 agg_eval_metrics[k] += v
 
         agg_eval_metrics = dict(agg_eval_metrics)
         for k, v in agg_eval_metrics.items():
-            if k != "batch_size":
-                agg_eval_metrics[k] /= agg_eval_metrics["batch_size"]
+            if k != "valid/batch_size":
+                agg_eval_metrics[k] /= agg_eval_metrics["valid/batch_size"]
 
         logs["epoch"] = epoch
 
@@ -265,6 +264,7 @@ def train(config: DictConfig):
                 trainer.model.state_dict(),
                 f"{CHECKPOINT_DIR}/{full_version}/checkpoints/best.ckpt",
             )
+            best_loss = logs['valid/nmt/loss']
 
         # Check if should save latest
         if config.get("save_every_n", None) is not None and epoch % config.get("save_every_n") == 0:
