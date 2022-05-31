@@ -14,7 +14,7 @@ from datasets.utils.tqdm_utils import set_progress_bar_enabled
 
 # User-defined
 from nmt_adapt.data.corpus_functional import load_custom_dataset
-from nmt_adapt.multi_task_learning import TokenDataloader, MutliTaskMorphTagTrainer
+from nmt_adapt.baselines import TokenDataloader, FineTuner, MutliTaskMorphTagTrainer
 from utils.experiment import (
     find_version,
     set_seed,
@@ -37,7 +37,7 @@ def train(config: DictConfig):
 
     """
 
-    def warmup_steps_check(config):
+    def warmup_steps_check(config, steps_per_epoch):
         """ Convert warmup steps defined as percentage of total training steps to a usable integer
 
         Args:
@@ -53,7 +53,7 @@ def train(config: DictConfig):
         )
         if cur_warmup_steps and cur_warmup_steps <= 1.0 and cur_warmup_steps > 0:
             adj_n_warmup_steps = int(
-                cur_warmup_steps * config["epochs"] * config["steps_per_epoch"]
+                cur_warmup_steps * config["epochs"] * steps_per_epoch
             )
 
             print(f"Setting {adj_n_warmup_steps} as the total number of warmup steps.")
@@ -172,17 +172,6 @@ def train(config: DictConfig):
     # ==============================================================================
     print(f"\n{timer.time()} | BUILDING TRAINER & DATALOADER" + "\n" + "+" * 50)
 
-    config = warmup_steps_check(config)
-
-    trainer = MutliTaskMorphTagTrainer(
-        tag_to_int=tag_to_int,
-        device=device,
-        **config["trainer"],
-    )
-
-    print(f"Loaded '{trainer.model.name_or_path}'")
-    print(f"Device: {next(trainer.model.parameters()).device}")
-
     train_dataloader = TokenDataloader(
         train_dataset,
         max_tokens=config["data_loader"]["max_tokens"],
@@ -197,8 +186,23 @@ def train(config: DictConfig):
         )
     print(f"Valid dataset batches: {len(valid_dataloader)}")
 
-    print(f"\nBuilt dataloader")
-    wandb.watch(trainer)
+    config = warmup_steps_check(config, len(train_dataloader))
+
+    if config["baseline"] == "fine_tune":
+        trainer = FineTuner(
+            device=device,
+            **config["trainer"],
+        )
+
+    if config["baseline"] == "multi_task_morph_tag":
+        trainer = MutliTaskMorphTagTrainer(
+            tag_to_int=tag_to_int,
+            device=device,
+            **config["trainer"],
+        )
+
+    print(f"Loaded '{trainer.model.name_or_path}'")
+    print(f"Device: {next(trainer.model.parameters()).device}")
 
     #! #############################################################################
     #! Training

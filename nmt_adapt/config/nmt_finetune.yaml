@@ -8,6 +8,8 @@ gpu: 1
 
 experiment_name: nmt_adapt_test
 
+baseline: fine_tune
+
 print_hparams: True
 debug: False
 sanity_check: True
@@ -17,8 +19,9 @@ epochs: 25
 
 logging:
   logger_kwargs:
-    job_type: test_multitask
-    mode: online
+    job_type: test_finetune
+    mode: offline
+    project: nmt_adapt_baselines
 
 data:
   src_lang: English
@@ -29,22 +32,17 @@ trainer:
   model_name: Helsinki-NLP/opus-mt-en-cs
   nmt_kwargs:
     label_smoothing: 0.1
-  morph_tag_clf_kwargs:
-    layer_dropout: 0.1
-    hidden_dim: 256
-    label_smoothing: 0.1
-  optimizer: adam
+  optimizer_algorithm: adamw
   optimizer_kwargs:
       nmt_lr: 3e-5
-      clf_lr: 1e-3
       betas:
         - 0.9
         - 0.98
       weight_decay: 1e-2
-      grad_norm: 5
+      grad_val: 2
   optimizer_scheduler: inv_sqrt
   optimizer_scheduler_kwargs:
-      n_warmup_steps: 1000
+      n_warmup_steps: 0.04
 
 data_loader:
   max_tokens: 1024

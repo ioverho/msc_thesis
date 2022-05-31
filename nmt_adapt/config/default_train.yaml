@@ -14,8 +14,6 @@ fdev_run: False
 
 logging:
   logger: wandb
-  logger_kwargs:
-    project: nmt_adapt_test
 
 hydra:
   run:

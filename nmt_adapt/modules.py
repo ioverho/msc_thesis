@@ -4,6 +4,39 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.utils.rnn import pad_sequence
 
+class SequenceMask(nn.Module):
+    """Masks a sequence tensor randomly.
+    A form of regularization/data augmentation.
+    Expects the tensor to be of form [B,T] or [T,B] (i.e. no dimensions) and of type torch.long.
+
+    Args:
+        mask_p (float): the probability of a single entry in the sequence gets masked. Defaults to 0.
+        mask_idx (int): the mask index replacing the given values
+        ign_idx (int): an index to be ignored, for example, padding
+    """
+
+    def __init__(self, mask_p: float = 0.0, mask_idx: int = 0) -> None:
+        super().__init__()
+
+        self.mask_p = float(mask_p)
+        self.register_buffer("mask_idx", torch.tensor(mask_idx, dtype=torch.long))
+
+    def forward(self, x: torch.Tensor, ign_mask: torch.Tensor = None):
+
+        if ign_mask is None:
+            ign_mask = torch.ones_like(x)
+
+        if self.training and self.mask_p > 0.0:
+            x = torch.where(
+                torch.logical_or(
+                    torch.bernoulli(x, 1-self.mask_p), ign_mask == 0
+                ),
+                x,
+                self.mask_idx,
+            )
+
+        return x
+
 class LayerAttention(nn.Module):
     """A layer attention module.
 
@@ -24,9 +57,7 @@ class LayerAttention(nn.Module):
         self.c = nn.Parameter(torch.ones(1), requires_grad=True)
         init.uniform_(self.h_w, a=-self.u, b=self.u)
 
-        if self.dropout > 0.0:
-            self.register_buffer("mask_probs", self.dropout * torch.ones(L))
-            self.register_buffer("mask_vals", torch.full((L,), -float(torch.inf)))
+        self.layer_dropout = nn.Dropout(self.dropout)
 
     def forward(self, h: torch.Tensor):
         """Attends on L layers of h.
@@ -38,18 +69,9 @@ class LayerAttention(nn.Module):
 
         h = h[:, :, -self.L:, :]
 
-        if self.dropout > 0.0 and self.training:
-            # Layer dropout
-            alpha = torch.softmax(
-                torch.where(
-                    torch.bernoulli(self.get_buffer("mask_probs")).bool(),
-                    self.get_buffer("mask_vals"),
-                    self.h_w,
-                ),
-                dim=0,
-            )
-        else:
-            alpha = torch.softmax(self.h_w, dim=0)
+        alpha = torch.softmax(self.h_w, dim=0)
+
+        alpha = self.layer_dropout(alpha)
 
         h_out = self.c * torch.sum((alpha.view(1, 1, -1, 1) * h), dim=2)
 
@@ -89,7 +111,7 @@ class TokenClassifier(nn.Module):
                 if bpe[0] == "▁":
                     sent_bpes_rep.append([bpe_rep])
 
-                elif bpe not in set(tokenizer.all_special_tokens):
+                elif bpe not in set(tokenizer.all_special_tokens) - {tokenizer.unk_token}:
                     sent_bpes_rep[-1].append(bpe_rep)
 
             batch_bpes_rep.append(

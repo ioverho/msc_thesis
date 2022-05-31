@@ -1,3 +1,4 @@
+import numpy as np
 import datasets
 from datasets import concatenate_datasets
 import hydra
@@ -39,9 +40,50 @@ def merge(config: DictConfig):
         loaded_corpora_test.append(corpus_split["test"])
 
     train_dataset = concatenate_datasets(loaded_corpora_train, split="train")
-    test_dataset = concatenate_datasets(loaded_corpora_test, split="test")
+    print(f"Train dataset: {len(train_dataset)}")
 
-    train_dataset.save_to_disk(
+    train_dataset = train_dataset.filter(
+        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0 and \
+            abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))),
+            with_indices=True
+            )
+
+    delta_lens = [
+        abs(len(tgt_tokens) - len(src_text.split(" "))) / len(src_text.split(" "))
+        for tgt_tokens, src_text in zip(train_dataset["tgt_tokens"], train_dataset["src_text"])]
+
+    min_diff, max_diff = np.quantile(delta_lens, [0.001, 0.999])
+
+    train_dataset = train_dataset.filter(
+        lambda example, idx: abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))) \
+            / len(example["src_text"].split(" ")) < max_diff,
+            with_indices=True
+            )
+    print(f"Filtered Train dataset: {len(train_dataset)}")
+
+    test_dataset = concatenate_datasets(loaded_corpora_test, split="test")
+    print(f"Train dataset: {len(test_dataset)}")
+
+    test_dataset = test_dataset.filter(
+        lambda example, idx: len(example["tgt_tokens"]) > 0 and len(example["src_text"]) > 0 and \
+            abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))),
+            with_indices=True
+            )
+
+    delta_lens = [
+        abs(len(tgt_tokens) - len(src_text.split(" "))) / len(src_text.split(" "))
+        for tgt_tokens, src_text in zip(test_dataset["tgt_tokens"], test_dataset["src_text"])]
+
+    min_diff, max_diff = np.quantile(delta_lens, [0.001, 0.999])
+
+    test_dataset = test_dataset.filter(
+        lambda example, idx: abs(len(example["tgt_tokens"]) - len(example["src_text"].split(" "))) \
+            / len(example["src_text"].split(" ")) < max_diff,
+            with_indices=True
+            )
+    print(f"Filtered Train dataset: {len(test_dataset)}")
+
+    test_dataset.save_to_disk(
         CORPORA_LOC
         + config["agg_name"]
         + f"_{config['src_lang'].lower()}_{config['tgt_lang'].lower()}_train"
