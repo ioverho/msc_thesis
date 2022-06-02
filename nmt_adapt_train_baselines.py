@@ -92,7 +92,7 @@ def train(config: DictConfig):
     #! #############################################################################
     print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
-    full_name = f"{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}"
+    full_name = f"{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}_{config['baseline']}"
 
     full_version, experiment_dir, version = find_version(
         full_name, CHECKPOINT_DIR, debug=config["debug"]
@@ -164,8 +164,6 @@ def train(config: DictConfig):
     print(f"Valid dataset: {len(valid_dataset)}")
 
     # Generate the tag to int mappings for the morphological tagging aspect
-    tag_to_int = {tag: i for i, tag in enumerate(sorted(list({tag for tag_seq in train_dataset["morph_tags"] for tag_set in tag_seq for tag in tag_set})))}
-    int_to_tag = {i: tag for tag, i in tag_to_int.items()}
 
     # ==============================================================================
     # Trainer & Dataloader
@@ -194,12 +192,18 @@ def train(config: DictConfig):
             **config["trainer"],
         )
 
-    if config["baseline"] == "multi_task_morph_tag":
+    elif config["baseline"] == "multi_task_morph_tag":
+        tag_to_int = {tag: i for i, tag in enumerate(sorted(list({tag for tag_seq in train_dataset["morph_tags"] for tag_set in tag_seq for tag in tag_set})))}
+        int_to_tag = {i: tag for tag, i in tag_to_int.items()}
+
         trainer = MutliTaskMorphTagTrainer(
             tag_to_int=tag_to_int,
             device=device,
             **config["trainer"],
         )
+
+    else:
+        raise ConfigurationError(f"Baseline method {config['baseline']} not implemented.")
 
     print(f"Loaded '{trainer.model.name_or_path}'")
     print(f"Device: {next(trainer.model.parameters()).device}")
@@ -224,17 +228,18 @@ def train(config: DictConfig):
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
 
     best_loss = 0.0
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"]+1):
 
-        print(f"\n{timer.time()} | Epoch {epoch:04} | Train")
-        for _ in range(len(train_dataloader)):
-            train_batch = next(train_dataloader)
+        if epoch != 0:
+            print(f"\n{timer.time()} | Epoch {epoch:04} | Train")
+            for _ in range(len(train_dataloader)):
+                train_batch = next(train_dataloader)
 
-            loss, logs = trainer.train_step(train_batch)
-            logs = trainer.optimize(loss, logs)
-            logs["epoch"] = epoch
+                loss, logs = trainer.train_step(train_batch)
+                logs = trainer.optimize(loss, logs)
+                logs["epoch"] = epoch
 
-            wandb.log(logs)
+                wandb.log(logs)
 
         print(f"{timer.time()} | Epoch {epoch:04} | Validation")
         agg_eval_metrics = defaultdict(float)

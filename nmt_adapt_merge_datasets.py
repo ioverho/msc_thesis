@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import datasets
 from datasets import concatenate_datasets
@@ -9,9 +11,12 @@ from nmt_adapt.data.corpus_functional import load_custom_dataset, CORPORA_LOC
 from nmt_adapt.inverse_index import InverseIndexv2
 from utils.experiment import set_seed, set_deterministic
 
+os.environ["HYDRA_FULL_ERROR"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+
 CORPORA_LOC = "./nmt_adapt/data/corpora/"
 INDICES_LOC = "./nmt_adapt/data/indices/"
-
 
 @hydra.main(config_path="./nmt_adapt/config", config_name="merge")
 def merge(config: DictConfig):

@@ -32,8 +32,8 @@ trainer:
   model_name: Helsinki-NLP/opus-mt-en-cs
   nmt_kwargs:
     label_smoothing: 0.1
-    dropout: 0.2
-    seq_mask: 0.1
+    dropout: 0.1
+    seq_mask: 0.0
   optimizer_algorithm: adamw
   optimizer_kwargs:
       nmt_lr: 1e-5

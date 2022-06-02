@@ -1,0 +1,32 @@
+defaults:
+  - default_train
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+checkpoint_dir: ./nmt_adapt/checkpoints/nmt_adapt_test_English_Czech/version_13
+model_name: Helsinki-NLP/opus-mt-en-cs
+dataset_name_lower: flores
+src_lang: English
+tgt_lang: Czech
+split: null
+num_beams: 12
+max_extra_tokens: 5
+generate_kwargs:
+  top_p: 0.9
+gpu: 1
+seed: 610
+deterministic: True
+utility_functions:
+  - bleu
+  - chrf++
+threads: 0
+cut_off: null
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: .
