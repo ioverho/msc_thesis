@@ -13,12 +13,14 @@ from utils.common_operations import label_smooth
 
 class TokenDataloader():
 
-    def __init__(self, dataset, max_tokens: int, max_sents: int):
+    def __init__(self, dataset, max_tokens: int, max_sents: int, length_sort: bool = False):
 
         self.dataset = dataset
 
         self.dataset = self.dataset.map(self.mean_length)
-        self.dataset = self.dataset.sort("length", reverse=True)
+
+        if length_sort:
+            self.dataset = self.dataset.sort("length", reverse=True)
 
         self.max_tokens = max_tokens
         self.max_sents = max_sents
@@ -505,14 +507,19 @@ class MutliTaskMorphTagTrainer(nn.Module):
                 self.tokenizer,
             )
 
+        morph_tag_label_tensor_ = morph_tag_label_tensor[:, :token_logits.size(1), :].to(self.model.device)
+
         morph_tags_loss = F.binary_cross_entropy_with_logits(
             input=token_logits,
             target=label_smooth(
                 epsilon=self.morph_tag_label_smoothing,
-                labels=morph_tag_label_tensor[:, :token_logits.size(1), :].to(self.model.device),
+                labels=morph_tag_label_tensor_,
                 K=morph_tag_label_tensor.size(-1)
                 ),
+            reduction='none',
         )
+
+        morph_tags_loss = torch.mean(morph_tags_loss[morph_tag_label_tensor_ != -100])
 
         logs = {
             "loss": nmt_loss.detach().cpu().item() + morph_tags_loss.detach().cpu().item(),
