@@ -47,6 +47,7 @@ trainer:
       n_warmup_steps: 0.04
 
 data_loader:
-  max_tokens: 2048
+  max_tokens: 512
   max_sents: 128
   length_sort: False
+  max_tokens_valid: 1024

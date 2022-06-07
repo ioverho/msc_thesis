@@ -175,14 +175,19 @@ def train(config: DictConfig):
         max_tokens=config["data_loader"]["max_tokens"],
         max_sents=config["data_loader"]["max_sents"],
         length_sort=config["data_loader"]["length_sort"],
+        shuffle=True,
         )
     print(f"Train dataset batches: {len(train_dataloader)}")
 
     valid_dataloader = TokenDataloader(
         valid_dataset,
-        max_tokens=config["data_loader"]["max_tokens"],
+        max_tokens=config["data_loader"].get(
+            "max_tokens_valid",
+            config["data_loader"]["max_tokens"]
+            ),
         max_sents=config["data_loader"]["max_sents"],
         length_sort=config["data_loader"]["length_sort"],
+        shuffle=False,
         )
     print(f"Valid dataset batches: {len(valid_dataloader)}")
 

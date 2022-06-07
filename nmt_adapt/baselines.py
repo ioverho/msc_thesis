@@ -13,7 +13,7 @@ from utils.common_operations import label_smooth
 
 class TokenDataloader():
 
-    def __init__(self, dataset, max_tokens: int, max_sents: int, length_sort: bool = False):
+    def __init__(self, dataset, max_tokens: int, max_sents: int, length_sort: bool = False, shuffle: bool = True):
 
         self.dataset = dataset
 
@@ -21,6 +21,8 @@ class TokenDataloader():
 
         if length_sort:
             self.dataset = self.dataset.sort("length", reverse=True)
+
+        self.shuffle = shuffle
 
         self.max_tokens = max_tokens
         self.max_sents = max_sents
@@ -55,6 +57,10 @@ class TokenDataloader():
     def __next__(self):
 
         self._i = 0 if self._i >= len(self._batches) else self._i
+
+        if self._i == 0 and self.shuffle:
+            self.dataset = self.dataset.shuffle()
+            self._batches = self._get_batches()
 
         n = sum(self._batches[:self._i])
         batch_size = self._batches[self._i]
