@@ -15,7 +15,7 @@ debug: False
 sanity_check: True
 save_every_n: null
 
-epochs: 5
+epochs: 1
 
 logging:
   logger_kwargs:
@@ -54,3 +54,4 @@ trainer:
 data_loader:
   max_tokens: 2048
   max_sents: 128
+  length_sort: False

@@ -92,7 +92,7 @@ def train(config: DictConfig):
     #! #############################################################################
     print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
-    full_name = f"{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}_{config['baseline']}"
+    full_name = f"{config['baseline']}_{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}"
 
     full_version, experiment_dir, version = find_version(
         full_name, CHECKPOINT_DIR, debug=config["debug"]
@@ -173,14 +173,16 @@ def train(config: DictConfig):
     train_dataloader = TokenDataloader(
         train_dataset,
         max_tokens=config["data_loader"]["max_tokens"],
-        max_sents=config["data_loader"]["max_sents"]
+        max_sents=config["data_loader"]["max_sents"],
+        length_sort=config["data_loader"]["length_sort"],
         )
     print(f"Train dataset batches: {len(train_dataloader)}")
 
     valid_dataloader = TokenDataloader(
         valid_dataset,
         max_tokens=config["data_loader"]["max_tokens"],
-        max_sents=config["data_loader"]["max_sents"]
+        max_sents=config["data_loader"]["max_sents"],
+        length_sort=config["data_loader"]["length_sort"],
         )
     print(f"Valid dataset batches: {len(valid_dataloader)}")
 
