@@ -164,7 +164,8 @@ class FineTuner(nn.Module):
         # Additional training details
         # ======================================================================
 
-        self.grad_clip_val = optimizer_kwargs.get("optimizer_kwargs", torch.inf)
+        self.grad_clip_val = optimizer_kwargs.get("grad_val", torch.inf)
+        self.grad_clip_norm = optimizer_kwargs.get("grad_norm", 20)
 
         self.nmt_label_smoothing = nmt_kwargs.get("label_smoothing", 0)
 
@@ -176,7 +177,7 @@ class FineTuner(nn.Module):
 
     def train_step(self, batch: torch.Tensor) -> typing.Tuple[torch.Tensor, typing.Dict]:
 
-        self.model.train()
+        self.train()
 
         # Tokenize and prep batch ======================================================
         src_text = batch["src_text"]
@@ -215,8 +216,10 @@ class FineTuner(nn.Module):
         )
 
         logs = {
-            "loss": nmt_loss.detach().cpu().item(),
-            "nmt/loss": nmt_loss.detach().cpu().item(),
+            "train/loss": nmt_loss.detach().cpu().item(),
+            "train/nmt/loss": nmt_loss.detach().cpu().item(),
+            "train/batch_size": labels.size(0),
+            "train/seq_lengths": sum([len(ref) for ref in ref_tokens]) / labels.size(0)
         }
 
         return nmt_loss, logs
@@ -234,7 +237,7 @@ class FineTuner(nn.Module):
 
         total_norm = nn.utils.clip_grad_norm_(
             self.parameters(),
-            100
+            self.grad_clip_norm
         )
 
 
@@ -254,7 +257,7 @@ class FineTuner(nn.Module):
     @torch.no_grad()
     def eval_step(self, batch, split: str = "valid"):
 
-        self.model.eval()
+        self.eval()
 
         # Tokenize and prep batch ======================================================
         src_text = batch["src_text"]
@@ -423,7 +426,8 @@ class MutliTaskMorphTagTrainer(nn.Module):
         # Additional training details
         # ======================================================================
 
-        self.grad_clip_val = optimizer_kwargs.get("optimizer_kwargs", torch.inf)
+        self.grad_clip_val = optimizer_kwargs.get("grad_val", torch.inf)
+        self.grad_clip_norm = optimizer_kwargs.get("grad_norm", 20)
 
         self.nmt_label_smoothing = nmt_kwargs.get("label_smoothing", 0)
         self.morph_tag_label_smoothing = morph_tag_clf_kwargs.get("label_smoothing", 0)
@@ -528,9 +532,11 @@ class MutliTaskMorphTagTrainer(nn.Module):
         morph_tags_loss = torch.mean(morph_tags_loss[morph_tag_label_tensor_ != -100])
 
         logs = {
-            "loss": nmt_loss.detach().cpu().item() + morph_tags_loss.detach().cpu().item(),
-            "nmt/loss": nmt_loss.detach().cpu().item(),
-            "morph_tag/loss": morph_tags_loss.detach().cpu().item(),
+            "train/loss": nmt_loss.detach().cpu().item() + morph_tags_loss.detach().cpu().item(),
+            "train/nmt/loss": nmt_loss.detach().cpu().item(),
+            "train/morph_tag/loss": morph_tags_loss.detach().cpu().item(),
+            "train/batch_size": labels.size(0),
+            "train/seq_lengths": sum([len(ref) for ref in ref_tokens]) / labels.size(0)
         }
 
         return nmt_loss + morph_tags_loss, logs
@@ -549,7 +555,7 @@ class MutliTaskMorphTagTrainer(nn.Module):
 
         total_norm = nn.utils.clip_grad_norm_(
             self.parameters(),
-            100
+            self.grad_clip_norm
         )
 
         logs["grad_norm"] = total_norm.cpu().item()
@@ -571,7 +577,6 @@ class MutliTaskMorphTagTrainer(nn.Module):
     def eval_step(self, batch, split: str = "valid"):
 
         self.model.eval()
-        self.token_clf.eval()
 
         # Tokenize and prep batch ======================================================
         src_text = batch["src_text"]
@@ -631,10 +636,19 @@ class MutliTaskMorphTagTrainer(nn.Module):
                 self.tokenizer,
             )
 
+        morph_tag_label_tensor_ = morph_tag_label_tensor[:, :token_logits.size(1), :].to(self.model.device)
+
         morph_tags_loss = F.binary_cross_entropy_with_logits(
             input=token_logits,
-            target=morph_tag_label_tensor.to(self.model.device)[:, :token_logits.size(1), :],
+            target=label_smooth(
+                epsilon=self.morph_tag_label_smoothing,
+                labels=morph_tag_label_tensor_,
+                K=morph_tag_label_tensor.size(-1)
+                ),
+            reduction='none',
         )
+
+        morph_tags_loss = torch.mean(morph_tags_loss[morph_tag_label_tensor_ != -100])
 
         # Morph tag metrics ========================================================
         morph_tags_pred = torch.round(torch.sigmoid(token_logits)).cpu()
