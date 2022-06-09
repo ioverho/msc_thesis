@@ -79,8 +79,10 @@ class LayerAttention(nn.Module):
 
 class TokenClassifier(nn.Module):
 
-    def __init__(self, in_features, hidden_dim, out_features, L, layer_dropout, **unused_kwargs):
+    def __init__(self, in_features, hidden_dim, out_features, L, dropout: float = 0.0, layer_dropout: float = 0.0, **unused_kwargs):
         super().__init__()
+
+        self.dropout = nn.Dropout(p=dropout)
 
         self.layer_attn = LayerAttention(
             L=L,
@@ -88,6 +90,7 @@ class TokenClassifier(nn.Module):
         )
 
         self.clf = nn.Sequential(
+            nn.Dropout(p=dropout),
             nn.Linear(
                 in_features=in_features,
                 out_features=hidden_dim,
@@ -100,6 +103,8 @@ class TokenClassifier(nn.Module):
         )
 
     def forward(self, features, tgt_input_ids, tokenizer):
+
+        features = self.dropout(features)
 
         bpe_reps = self.layer_attn(features)
 

@@ -8,6 +8,8 @@ class DummyScheduler:
     def step(self):
         return None
 
+    def lambda_step(self):
+        pass
 
 class InvSqrtWithLinearWarmupScheduler:
     """A learning rate scheduler according to the Attention is All You Need paper.
@@ -50,3 +52,10 @@ class InvSqrtWithLinearWarmupScheduler:
 
         for p_group, default_lr in zip(self.optimizer.param_groups, self._default_lrs):
             p_group["lr"] = default_lr * self._get_lr_scale()
+
+    def lambda_step(self, fn):
+
+        self._default_lrs = [
+            fn(default_lr)
+            for default_lr in self._default_lrs
+            ]

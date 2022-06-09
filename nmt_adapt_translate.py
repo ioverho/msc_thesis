@@ -145,7 +145,7 @@ def generate_translations(config):
             detokenized_tgt_text = detokenizer.detokenize(sample["tgt_tokens"])
 
             # Find beam search solution ================================================
-            src_input = tokenizer(src_text, return_tensors="pt")
+            src_input = tokenizer(src_text, return_tensors="pt", padding=True, truncate=True)
             with tokenizer.as_target_tokenizer():
                 tgt_input = tokenizer(sample["tgt_tokens"], is_split_into_words=True, padding=True, truncate=True)
 

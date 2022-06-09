@@ -13,9 +13,14 @@ baseline: fine_tune
 print_hparams: True
 debug: False
 sanity_check: True
-save_every_n: null
 
-epochs: 1
+cutoff: null
+valid_size: 0.1
+max_steps: 100000
+eval_every_n_steps: 10000
+patience: 3
+lr_reduce: 0.5
+save_every_n: null
 
 logging:
   logger_kwargs:
@@ -36,7 +41,7 @@ trainer:
     seq_mask: 0.0
   optimizer_algorithm: adamw
   optimizer_kwargs:
-    nmt_lr: 1e-5
+    nmt_lr: 1e-6
     betas:
       - 0.9
       - 0.98
@@ -45,7 +50,7 @@ trainer:
     grad_norm: 5.0
   optimizer_scheduler: inv_sqrt
   optimizer_scheduler_kwargs:
-    n_warmup_steps: 0.08
+    n_warmup_steps: 16000
 
 data_loader:
   max_tokens: 512

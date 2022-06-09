@@ -53,7 +53,7 @@ def train(config: DictConfig):
         )
         if cur_warmup_steps and cur_warmup_steps <= 1.0 and cur_warmup_steps > 0:
             adj_n_warmup_steps = int(
-                cur_warmup_steps * config["epochs"] * steps_per_epoch
+                cur_warmup_steps * config["max_steps"]
             )
 
             print(f"Setting {adj_n_warmup_steps} as the total number of warmup steps.")
@@ -104,6 +104,8 @@ def train(config: DictConfig):
     with open(f"{CHECKPOINT_DIR}/{full_version}/config.yaml", "w") as outfile:
         yaml.dump(OmegaConf.to_container(config, resolve=True), outfile)
 
+    print(f"Experiment dir: {CHECKPOINT_DIR}/{full_version}")
+
     # == Reproducibility
     set_seed(config["seed"])
     if config["deterministic"]:
@@ -147,23 +149,31 @@ def train(config: DictConfig):
     # Dataset
     # ==============================================================================
     print(f"\n{timer.time()} | LOADING DATASET" + "\n" + "+" * 50)
-    train_dataset = load_custom_dataset(
+    datasets = load_custom_dataset(
         src_lang=config["data"]["src_lang"],
         tgt_lang=config["data"]["tgt_lang"],
         dataset_name=config["data"]["dataset_name"],
         split="train",
-    )
-    print(f"Train dataset: {len(train_dataset)}")
+    ).train_test_split(test_size=config["valid_size"])
 
-    valid_dataset = load_custom_dataset(
+    train_dataset = datasets["train"]
+    valid_dataset = datasets["test"]
+
+    print(f"Train dataset: {len(train_dataset)}")
+    print(f"Valid dataset: {len(valid_dataset)}")
+
+    test_dataset = load_custom_dataset(
         src_lang=config["data"]["src_lang"],
         tgt_lang=config["data"]["tgt_lang"],
         dataset_name=config["data"]["dataset_name"],
         split="test",
     )
-    print(f"Valid dataset: {len(valid_dataset)}")
+    print(f"Test dataset: {len(test_dataset)}")
 
-    # Generate the tag to int mappings for the morphological tagging aspect
+    if config.get("cutoff", None) is not None:
+        train_dataset = train_dataset.select(list(range(config["cutoff"])))
+        valid_dataset = valid_dataset.select(list(range(config["cutoff"])))
+        test_dataset = test_dataset.select(list(range(config["cutoff"])))
 
     # ==============================================================================
     # Trainer & Dataloader
@@ -190,6 +200,18 @@ def train(config: DictConfig):
         shuffle=False,
         )
     print(f"Valid dataset batches: {len(valid_dataloader)}")
+
+    test_dataloader = TokenDataloader(
+        test_dataset,
+        max_tokens=config["data_loader"].get(
+            "max_tokens_valid",
+            config["data_loader"]["max_tokens"]
+            ),
+        max_sents=config["data_loader"]["max_sents"],
+        length_sort=config["data_loader"]["length_sort"],
+        shuffle=False,
+        )
+    print(f"Test dataset batches: {len(test_dataloader)}")
 
     config = warmup_steps_check(config, len(train_dataloader))
 
@@ -234,58 +256,91 @@ def train(config: DictConfig):
 
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
 
+    epoch = 0
     best_loss = 0.0
-    for epoch in range(config["epochs"]+1):
+    curr_patience = config["patience"]
+    for step in range(config["max_steps"]):
 
-        if epoch != 0:
-            print(f"\n{timer.time()} | Epoch {epoch:04} | Train")
-            for _ in range(len(train_dataloader)):
-                train_batch = next(train_dataloader)
+        if curr_patience <= 0:
+            print("Patience ran out. Stopping early.")
+            break
 
-                loss, logs = trainer.train_step(train_batch)
-                logs = trainer.optimize(loss, logs)
-                logs["epoch"] = epoch
+        # Train
+        train_batch = next(train_dataloader)
 
-                wandb.log(logs)
-
-        print(f"{timer.time()} | Epoch {epoch:04} | Validation")
-        agg_eval_metrics = defaultdict(float)
-        for _ in range(len(valid_dataloader)):
-            valid_batch = next(valid_dataloader)
-            logs = trainer.eval_step(valid_batch, split="valid")
-
-            for k, v in logs.items():
-                agg_eval_metrics[k] += v
-
-        agg_eval_metrics = dict(agg_eval_metrics)
-        for k, v in agg_eval_metrics.items():
-            if k != "valid/batch_size":
-                agg_eval_metrics[k] /= agg_eval_metrics["valid/batch_size"]
-
+        loss, logs = trainer.train_step(train_batch)
+        logs = trainer.optimize(loss, logs)
         logs["epoch"] = epoch
 
         wandb.log(logs)
 
-        print(f"Validation NMT loss: {logs['valid/nmt/loss']:.2e}")
+        # Eval
+        if step % config["eval_every_n_steps"] == 0 or step == config["max_steps"] - 1:
+            print(f"{timer.time()} | Epoch {epoch:04} | Validation")
+            agg_eval_metrics = defaultdict(float)
+            for _ in range(len(valid_dataloader)):
+                valid_batch = next(valid_dataloader)
+                logs = trainer.eval_step(valid_batch, split="valid")
 
-        # Check loss if best for early stopping/saving
-        # If first epoch, loss is immediately best recorded
-        if epoch == 0 or logs['valid/nmt/loss'] <= best_loss:
-            print(f">>NEW BEST<<")
-            torch.save(
-                trainer.model.state_dict(),
-                f"{CHECKPOINT_DIR}/{full_version}/checkpoints/best.ckpt",
-            )
-            best_loss = logs['valid/nmt/loss']
+                for k, v in logs.items():
+                    agg_eval_metrics[k] += v
 
-        # Check if should save latest
-        if config.get("save_every_n", None) is not None and epoch % config.get("save_every_n") == 0:
-            torch.save(
-                trainer.model.state_dict(),
-                f"{CHECKPOINT_DIR}/{full_version}/checkpoints/latest.ckpt",
-            )
+            agg_eval_metrics = dict(agg_eval_metrics)
+            for k, v in agg_eval_metrics.items():
+                if k != "valid/batch_size":
+                    agg_eval_metrics[k] /= agg_eval_metrics["valid/batch_size"]
+
+            logs["epoch"] = epoch
+
+            wandb.log(logs)
+
+            print(f"Validation NMT loss: {logs['valid/nmt/loss']:.2e}")
+
+            # Check loss if best for early stopping/saving
+            # If first epoch, loss is immediately best recorded
+            if epoch == 0 or logs['valid/nmt/loss'] <= best_loss:
+                print(f">>NEW BEST<<")
+                torch.save(
+                    trainer.model.state_dict(),
+                    f"{CHECKPOINT_DIR}/{full_version}/checkpoints/best.ckpt",
+                )
+                best_loss = logs['valid/nmt/loss']
+                curr_patience = config["patience"]
+
+            else:
+                curr_patience -= 1
+                trainer.nmt_optimizer_scheduler.lambda_step(lambda x: x * config.get("lr_reduce", 1.0))
+
+            # Check if should save latest
+            if config.get("save_every_n", None) is not None and epoch % config.get("save_every_n") == 0:
+                torch.save(
+                    trainer.model.state_dict(),
+                    f"{CHECKPOINT_DIR}/{full_version}/checkpoints/latest.ckpt",
+                )
+
+            epoch += 1
 
     timer.end()
+
+    print(f"{timer.time()} | FINAL | Test")
+    agg_eval_metrics = defaultdict(float)
+    for _ in range(len(test_dataloader)):
+        test_batch = next(test_dataloader)
+        logs = trainer.eval_step(test_batch, split="test")
+
+        for k, v in logs.items():
+            agg_eval_metrics[k] += v
+
+    agg_eval_metrics = dict(agg_eval_metrics)
+    for k, v in agg_eval_metrics.items():
+        if k != "test/batch_size":
+            agg_eval_metrics[k] /= agg_eval_metrics["test/batch_size"]
+
+    logs["epoch"] = epoch
+
+    wandb.log(logs)
+
+    print(f"Test NMT loss: {logs['test/nmt/loss']:.2e}")
 
     return 1
 
