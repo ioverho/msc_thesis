@@ -92,20 +92,6 @@ def train(config: DictConfig):
     #! #############################################################################
     print(f"\n{timer.time()} | EXPERIMENT SETUP")
 
-    full_name = f"{config['baseline']}_{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}"
-
-    full_version, experiment_dir, version = find_version(
-        full_name, CHECKPOINT_DIR, debug=config["debug"]
-    )
-
-    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}", exist_ok=True)
-    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}/checkpoints", exist_ok=True)
-
-    with open(f"{CHECKPOINT_DIR}/{full_version}/config.yaml", "w") as outfile:
-        yaml.dump(OmegaConf.to_container(config, resolve=True), outfile)
-
-    print(f"Experiment dir: {CHECKPOINT_DIR}/{full_version}")
-
     # == Reproducibility
     set_seed(config["seed"])
     if config["deterministic"]:
@@ -118,7 +104,7 @@ def train(config: DictConfig):
     if config["logging"]["logger"].lower() in ["wandb", "weightsandbiases"]:
 
         # TODO: figure out when fork is needed
-        wandb.init(
+        run = wandb.init(
             #settings=wandb.Settings(start_method="fork"),
             settings=wandb.Settings(start_method="thread"),
             config=OmegaConf.to_container(config),
@@ -127,6 +113,17 @@ def train(config: DictConfig):
 
     else:
         raise ConfigurationError("Logger not recognized.")
+
+    # == Checkpoint dir
+    full_version = f"{config['baseline']}_{config['experiment_name']}_{config['data']['src_lang']}_{config['data']['tgt_lang']}/{run.name}"
+
+    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}", exist_ok=True)
+    os.makedirs(f"{CHECKPOINT_DIR}/{full_version}/checkpoints", exist_ok=True)
+
+    with open(f"{CHECKPOINT_DIR}/{full_version}/config.yaml", "w") as outfile:
+        yaml.dump(OmegaConf.to_container(config, resolve=True), outfile)
+
+    print(f"Experiment dir: {CHECKPOINT_DIR}/{full_version}")
 
     # == Device
     use_cuda = config["gpu"] or config["gpu"] > 1
