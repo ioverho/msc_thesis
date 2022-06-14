@@ -9,8 +9,8 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from nmt_adapt.optim import DummyScheduler, InvSqrtWithLinearWarmupScheduler
-from nmt_adapt.gbml import MarianMAMLpp, MarianAnil
+from nmt_adapt.optim import DummyScheduler, LinearDecay, InvSqrtWithLinearWarmupScheduler
+from nmt_adapt.gbml import MarianDecMAML, MarianDecBOIL, MarianDecANIL
 from utils.errors import ConfigurationError
 
 
@@ -361,7 +361,8 @@ class MetaTrainer(object):
         meta_learner_kwargs: typing.Optional[dict] = dict(),
         meta_optimizer_kwargs: typing.Optional[dict] = dict(),
         meta_optimizer_scheduler_kwargs: typing.Optional[dict] = dict(),
-        grad_clip_val: typing.Optional[float] = None,
+        grad_clip_val: float = 2.0,
+        grad_clip_norm: float = 5.0,
         device: typing.Optional[torch.device] = None,
     ):
 
@@ -384,22 +385,27 @@ class MetaTrainer(object):
         # ======================================================================
         # Build the meta learning algorithm
         # ======================================================================
-        if (
-            meta_learner_algorithm.lower() == "maml++"
-            or meta_learner_algorithm.lower() == "mamlpp"
-        ):
-            self.meta_learner = MarianMAMLpp(
-                self.model, lr=inner_lr, **meta_learner_kwargs
+        if meta_learner_algorithm.lower() == "maml":
+            self.meta_learner = MarianDecMAML(
+                self.model,
+                lr=inner_lr,
+                **meta_learner_kwargs,
             )
-            self._anil = False
-        elif (
-            meta_learner_algorithm.lower() == "anil"
-            or meta_learner_algorithm.lower() == "anil++"
-        ):
-            self.meta_learner = MarianAnil(
-                self.model, lr=inner_lr, **meta_learner_kwargs
+
+        elif meta_learner_algorithm.lower() == "boil":
+            self.meta_learner = MarianDecBOIL(
+                self.model,
+                lr=inner_lr,
+                **meta_learner_kwargs,
             )
-            self._anil = True
+
+        elif meta_learner_algorithm.lower() == "anil":
+            self.meta_learner = MarianDecANIL(
+                self.model,
+                lr=inner_lr,
+                **meta_learner_kwargs,
+            )
+
         else:
             raise NotImplementedError(
                 f"Meta learner {meta_learner_algorithm.lower()} not implemented yet."
@@ -411,10 +417,11 @@ class MetaTrainer(object):
         # ======================================================================
         # Build the meta learning outer loop optimizers
         # ======================================================================
-        if meta_optimizer_algorithm.lower() == "adam":
+        if meta_optimizer_algorithm.lower() == "adam" and "weight_decay" not in meta_optimizer_kwargs.keys():
             self.meta_optimizer = optim.Adam(
                 self.meta_learner.parameters(), lr=meta_lr, **meta_optimizer_kwargs
             )
+
         elif meta_optimizer_algorithm.lower() == "adamw" or (
             meta_optimizer_algorithm.lower() == "adam"
             and "weight_decay" in meta_optimizer_kwargs.keys()
@@ -422,6 +429,7 @@ class MetaTrainer(object):
             self.meta_optimizer = optim.AdamW(
                 self.meta_learner.parameters(), lr=meta_lr, **meta_optimizer_kwargs
             )
+
         else:
             raise NotImplementedError(
                 f"Meta optimizer {meta_optimizer_algorithm.lower()} not implemented yet."
@@ -429,14 +437,22 @@ class MetaTrainer(object):
 
         if meta_optimizer_scheduler is None:
             self.meta_optimizer_scheduler = DummyScheduler()
+
+        elif meta_optimizer_scheduler.lower() == "linear":
+            self.meta_optimizer_scheduler = LinearDecay(
+                self.meta_optimizer, **meta_optimizer_scheduler_kwargs
+            )
+
         elif meta_optimizer_scheduler.lower() == "inv_sqrt":
             self.meta_optimizer_scheduler = InvSqrtWithLinearWarmupScheduler(
                 self.meta_optimizer, **meta_optimizer_scheduler_kwargs
             )
+
         else:
             raise NotImplementedError(
                 f"LR scheduler {meta_optimizer_scheduler.lower()} not implemented yet."
             )
+
         # ======================================================================
         # Additional training details
         # ======================================================================
@@ -451,6 +467,7 @@ class MetaTrainer(object):
         self.first_order_epochs = first_order_epochs
 
         self.grad_clip_val = grad_clip_val
+        self.grad_clip_norm = grad_clip_norm
 
         # ======================================================================
         # Tracking metrics
@@ -471,27 +488,31 @@ class MetaTrainer(object):
         init_loss = 0.0
         loss = 0.0
 
-        if self._anil:
-            with torch.no_grad():
-                features = model.extract_features(
-                    input_ids=src_inputs["input_ids"],
-                    attention_mask=src_inputs["attention_mask"],
-                    decoder_input_ids=tgt_inputs["input_ids"][:, :-1],
-                    decoder_attention_mask=tgt_inputs["attention_mask"][:, :-1],
-                )
+        input_ids = src_inputs["input_ids"].to(model.device)
+        attention_mask = src_inputs["attention_mask"].to(model.device)
+        decoder_input_ids = tgt_inputs["input_ids"][:, :-1].to(model.device)
+        decoder_attention_mask = tgt_inputs["attention_mask"][:, :-1].to(model.device)
+
+        with torch.no_grad():
+            features = model.extract_features(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                push_to_device=False,
+            )
 
         if adapt_steps > 0:
             for k in range(adapt_steps):
 
-                if not self._anil:
-                    features = model.extract_features(
-                        input_ids=src_inputs["input_ids"],
-                        attention_mask=src_inputs["attention_mask"],
-                        decoder_input_ids=tgt_inputs["input_ids"][:, :-1],
-                        decoder_attention_mask=tgt_inputs["attention_mask"][:, :-1],
+                logits = model.classify(
+                    features=features,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    decoder_input_ids=decoder_input_ids,
+                    decoder_attention_mask=decoder_attention_mask,
+                    push_to_device=False,
                     )
-
-                logits = model.classify(features)
 
                 loss = F.cross_entropy(
                     input=logits.permute(0, 2, 1), target=labels.to(logits.device)
@@ -503,15 +524,15 @@ class MetaTrainer(object):
                     init_loss = loss.detach().cpu()
 
         else:
-            if not self._anil:
-                features = model.extract_features(
-                    input_ids=src_inputs["input_ids"],
-                    attention_mask=src_inputs["attention_mask"],
-                    decoder_input_ids=tgt_inputs["input_ids"][:, :-1],
-                    decoder_attention_mask=tgt_inputs["attention_mask"][:, :-1],
-                )
 
-            logits = model.classify(features)
+            logits = model.classify(
+                features=features,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                push_to_device=False,
+                )
 
             loss = F.cross_entropy(
                 input=logits.permute(0, 2, 1), target=labels.to(logits.device)
@@ -549,6 +570,7 @@ class MetaTrainer(object):
             }
 
         logs_["train/first_order"] = logs["first_order"].float()
+        logs_["batch_size"] = sum(logs["batch_size"]) / len(logs["batch_size"])
 
         return logs_
 
@@ -605,6 +627,7 @@ class MetaTrainer(object):
             logs["query_post_loss"] += [init_loss]
 
             logs["objective"] += [objective]
+            logs["batch_size"] += [query_labels.size(0)]
 
         logs = dict(logs)
         logs["first_order"] = torch.tensor(first_order)
@@ -618,21 +641,20 @@ class MetaTrainer(object):
         self.meta_optimizer.zero_grad()
         loss.backward()
 
+        batch_size_normalizer = 1.0 / self.train_meta_batchsize
         for p in self.meta_learner.parameters():
             if p.grad is not None:
-                p.grad.data.mul_(1.0 / self.train_meta_batchsize)
+                p.grad.data.mul_(batch_size_normalizer)
 
         if self.grad_clip_val is not None:
             nn.utils.clip_grad_value_(
                 self.meta_learner.parameters(), self.grad_clip_val
             )
 
-        total_norm = 0.0
-        for p in self.meta_learner.parameters():
-            if p.grad is not None and p.requires_grad:
-                param_norm = p.grad.detach().data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
+        total_norm = nn.utils.clip_grad_norm_(
+            self.meta_learner.parameters(),
+            self.grad_clip_norm
+        )
 
         logs["global_step"] = self.global_step
         logs["grad_norm"] = total_norm
@@ -671,14 +693,28 @@ class MetaTrainer(object):
             """
             # Compute loss of query set prior to adaptation
             # Computes for both relevant and non-relevant tokens
+
+            input_ids = src_inputs["input_ids"].to(model.device)
+            attention_mask = src_inputs["attention_mask"].to(model.device)
+            decoder_input_ids = tgt_inputs["input_ids"][:, :-1].to(model.device)
+            decoder_attention_mask = tgt_inputs["attention_mask"][:, :-1].to(model.device)
+
             features = model.extract_features(
-                input_ids=src_inputs["input_ids"],
-                attention_mask=src_inputs["attention_mask"],
-                decoder_input_ids=tgt_inputs["input_ids"][:, :-1],
-                decoder_attention_mask=tgt_inputs["attention_mask"][:, :-1],
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                push_to_device=False,
             )
 
-            logits = model.classify(features)
+            logits = model.classify(
+                features=features,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                push_to_device=False,
+                )
 
             loss = F.cross_entropy(
                 input=logits.permute(0, 2, 1),

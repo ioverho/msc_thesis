@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoTokenizer, AutoModelForSeq2SeqLM
 
-from nmt_adapt.optim import InvSqrtWithLinearWarmupScheduler, DummyScheduler
+from nmt_adapt.optim import InvSqrtWithLinearWarmupScheduler, LinearDecay, DummyScheduler
 from nmt_adapt.modules import SequenceMask, TokenClassifier
 from utils.common_operations import label_smooth
 
@@ -148,6 +148,12 @@ class FineTuner(nn.Module):
 
         if optimizer_scheduler is None:
             self.optimizer_scheduler = DummyScheduler()
+
+        elif optimizer_scheduler.lower() == "linear":
+
+            self.nmt_optimizer_scheduler = LinearDecay(
+                self.nmt_optimizer, **optimizer_scheduler_kwargs
+            )
 
         elif optimizer_scheduler.lower() == "inv_sqrt":
 

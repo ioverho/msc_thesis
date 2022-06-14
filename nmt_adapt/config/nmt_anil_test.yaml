@@ -12,12 +12,14 @@ gpu: 1
 sanity_check: true
 save_every_n: null
 
-epochs: 100
-steps_per_epoch: 250
+epochs: 16
+steps_per_epoch: 10000
 
 logging:
   logger_kwargs:
     job_type: test
+    mode: online
+    project: nmt_adapt_test
 
 data:
   src_lang: english
@@ -46,23 +48,24 @@ trainer:
   meta_learner_algorithm: "anil"
   inner_lr: 5.0e-4
   meta_optimizer_algorithm: adamw
-  meta_lr: 1.0e-5
+  meta_lr: 5.0e-6
   meta_optimizer_kwargs:
-    weight_decay: 1.0e-2
-  meta_optimizer_scheduler: inv_sqrt
+    weight_decay: 1.0e-1
+  meta_optimizer_scheduler: linear
   meta_optimizer_scheduler_kwargs:
-    n_warmup_steps: 0.04
-  train_meta_batchsize: 8
+    n_warmup_steps: 160000
+  train_meta_batchsize: 4
   valid_meta_batchsize: 256
   train_k: 1
   valid_k: 1
   first_order_epochs: 0
   grad_clip_val: 2.0
+  grad_clip_norm: 5.0
 
 data_loader:
   mode: cross_transfer
-  n_lemmas_per_task: 2
-  n_samples_per_lemma: 4
+  n_lemmas_per_task: 4
+  n_samples_per_lemma: 2
   p_full_nmt: 0.1
   p_uninformed: 0.1
   eval_uninformed: False
