@@ -7,7 +7,7 @@ import argparse
 import torch
 from sacremoses import MosesDetokenizer
 import pycountry
-from transformers import AutoTokenizer, AutoConfig, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoConfig, AutoModelForSeq2SeqLM, Trainer
 from datasets import Dataset
 import mbr_nmt
 import mbr_nmt.translate as mbr_translate
@@ -34,7 +34,8 @@ def load_nmt_checkpoint(checkpoint_dir = None, model_name = None):
         model_name = train_config["trainer"]["model_name"]
 
         model_config = AutoConfig.from_pretrained(model_name)
-        model_config.dropout = train_config["trainer"]["nmt_kwargs"]["dropout"]
+        if "nmt_kwargs" in train_config["trainer"].keys():
+            model_config.dropout = train_config["trainer"]["nmt_kwargs"].get("dropout", model_config.dropout)
 
         name = "_".join(checkpoint_dir.split("/")[-2:])
 
