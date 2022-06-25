@@ -281,8 +281,13 @@ def train(config: DictConfig):
     print(f"\n{timer.time()} | TRAINING" + "\n" + "+" * 50)
 
     best_loss = 0.0
+    curr_patience = config.get("patience", config["epochs"])
 
     for epoch in range(config["epochs"]):
+
+        if curr_patience <= 0:
+            print("Patience ran out. Stopping early.")
+            break
 
         print(f"\n{timer.time()} | Epoch {epoch:04}")
         for step in progressbar(
@@ -298,13 +303,13 @@ def train(config: DictConfig):
         logs["epoch"] = epoch
         wandb.log(logs)
 
-        print(f"Train query losses pre-adapt {logs['train/query_harmonic_mean']:.2e}")
+        print(f"{timer.time()} | Train query losses pre-adapt {logs['train/query_harmonic_mean']:.2e}")
 
         logs = meta_trainer.eval_step(meta_valid_data_loader, split="valid")
         logs["epoch"] = epoch
         wandb.log(logs)
 
-        print(f"Valid query losses pre-adapt {logs['valid/query_harmonic_mean']:.2e}")
+        print(f"{timer.time()} | Valid query losses pre-adapt {logs['valid/query_harmonic_mean']:.2e}")
 
         # Check loss if best for early stopping/saving
         # If first epoch, loss is immediately best recorded
@@ -314,6 +319,12 @@ def train(config: DictConfig):
                 meta_trainer.model.state_dict(),
                 f"{CHECKPOINT_DIR}/{full_version}/checkpoints/best.ckpt",
             )
+
+            best_loss = logs['valid/query_harmonic_mean']
+
+        else:
+            curr_patience -= 1
+            meta_trainer.meta_optimizer_scheduler.lambda_step(lambda x: x * config.get("lr_reduce", 1.0))
 
         # Check if should save latest
         if config.get("save_every_n", None) is not None and epoch % config.get("save_every_n") == 0:

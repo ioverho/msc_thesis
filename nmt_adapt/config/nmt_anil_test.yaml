@@ -10,10 +10,13 @@ print_hparams: True
 debug: False
 gpu: 1
 sanity_check: true
+
+patience: 3
+lr_reduce: 0.4642
 save_every_n: null
 
-epochs: 16
-steps_per_epoch: 10000
+epochs: 10
+steps_per_epoch: 5000
 
 logging:
   logger_kwargs:
@@ -29,33 +32,25 @@ data:
 index:
   fp: "./nmt_adapt/data/indices/ataman_multidomain_english_czech"
   infer_splits: True
-  index_level: tag_set
-  filter_level: script
-  #reduce:
-  #  max_samples: 1000
-  #  min_samples: 0
-  #  min_lemmas: 2
-  #  min_samples_per_lemma: 2
   filter:
     - "_"
 
 task_sampler:
   eval_fp: "./nmt_adapt/eval/220426_1444_English_Czech.pickle"
-  filter_level: script
 
 trainer:
   model_name: "Helsinki-NLP/opus-mt-en-cs"
   meta_learner_algorithm: "anil"
-  inner_lr: 5.0e-4
+  inner_lr: 1.0e-3
   meta_optimizer_algorithm: adamw
   meta_lr: 5.0e-6
   meta_optimizer_kwargs:
-    weight_decay: 1.0e-1
+    weight_decay: 1.0e-2
   meta_optimizer_scheduler: linear
   meta_optimizer_scheduler_kwargs:
-    n_warmup_steps: 160000
-  train_meta_batchsize: 4
-  valid_meta_batchsize: 256
+    n_warmup_steps: 20000
+  train_meta_batchsize: 8
+  valid_meta_batchsize: 1024
   train_k: 1
   valid_k: 1
   first_order_epochs: 0
@@ -66,6 +61,6 @@ data_loader:
   mode: cross_transfer
   n_lemmas_per_task: 4
   n_samples_per_lemma: 2
-  p_full_nmt: 0.1
-  p_uninformed: 0.1
+  p_full_nmt: 0.25
+  p_uninformed: 0.25
   eval_uninformed: False

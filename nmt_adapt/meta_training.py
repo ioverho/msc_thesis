@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoConfig, AutoModelForSeq2SeqLM
 from nmt_adapt.optim import DummyScheduler, LinearDecay, InvSqrtWithLinearWarmupScheduler
 from nmt_adapt.gbml import MarianDecMAML, MarianDecBOIL, MarianDecANIL
 from utils.errors import ConfigurationError
@@ -176,10 +176,11 @@ class MetaDataLoader(object):
 
             # Generate labels from target inputs
             # i.e. use next bpe as label whenever it is not padding
+            labels = target_inputs["input_ids"][:, 1:]
             labels = torch.where(
                 target_inputs["attention_mask"][:, 1:] == 0,
                 -100,
-                target_inputs["input_ids"][:, 1:],
+                labels
             )
 
         else:
@@ -352,6 +353,7 @@ class MetaTrainer(object):
         inner_lr: float,
         meta_optimizer_algorithm: str,
         meta_lr: float,
+        checkpoint_path: typing.Optional[str] = None,
         meta_optimizer_scheduler: typing.Optional[str] = None,
         train_meta_batchsize: int = 1,
         valid_meta_batchsize: typing.Optional[int] = None,
@@ -363,6 +365,7 @@ class MetaTrainer(object):
         meta_optimizer_scheduler_kwargs: typing.Optional[dict] = dict(),
         grad_clip_val: float = 2.0,
         grad_clip_norm: float = 5.0,
+        full_objective_as_meta: bool = True,
         device: typing.Optional[torch.device] = None,
     ):
 
@@ -370,10 +373,16 @@ class MetaTrainer(object):
         # Import the base model
         # ======================================================================
         self.model_name = model_name
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, enable_sampling=False
-        )
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+
+        if checkpoint_path is None:
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+
+        else:
+            print(f"Loading from: {checkpoint_path}")
+            config = AutoConfig.from_pretrained(self.model_name)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint_path, config=config)
 
         self._eos_token_id = self.tokenizer.convert_tokens_to_ids(
             [self.tokenizer.special_tokens_map["eos_token"]]
@@ -469,11 +478,31 @@ class MetaTrainer(object):
         self.grad_clip_val = grad_clip_val
         self.grad_clip_norm = grad_clip_norm
 
+        self.full_objective_as_meta = full_objective_as_meta
+
         # ======================================================================
         # Tracking metrics
         # ======================================================================
         self.epoch = 0
         self.global_step = 0
+
+    def nmt_step(
+        self,
+        model,
+        src_input,
+        tgt_input,
+        labels,
+    ):
+
+        # Forward pass =================================================================
+        model_output = model.forward(
+            input_ids=src_input["input_ids"].to(model.device),
+            attention_mask=src_input["attention_mask"].to(model.device),
+            output_hidden_states=True,
+            labels=labels.to(model.device),
+        )
+
+        return model_output.loss
 
     def gmbl_step(
         self,
@@ -575,10 +604,11 @@ class MetaTrainer(object):
         return logs_
 
     def train_step(self, data_loader):
-
+    
         self.meta_learner.train()
 
         logs = defaultdict(list)
+        first_order = self.first_order_epochs < self.epoch
 
         meta_batch_loss = torch.tensor(0.0, device=self.meta_learner.device)
         for _ in range(self.train_meta_batchsize):
@@ -590,41 +620,54 @@ class MetaTrainer(object):
             supp_src_inputs, supp_tgt_inputs, supp_labels = support_batch
             query_src_inputs, query_tgt_inputs, query_labels = query_batch
 
-            # Clone the model for task-specific adaptation
-            first_order = self.first_order_epochs < self.epoch
-            task_model = self.meta_learner.clone()
+            if objective == "full" and not self.full_objective_as_meta:
+                loss = self.nmt_step(
+                    self.meta_learner.model,
+                    supp_src_inputs,
+                    supp_tgt_inputs,
+                    supp_labels,
+                )
 
-            # ==================================================================
-            # Support / Inner loop optimization
-            # ==================================================================
+                meta_batch_loss += loss
 
-            task_model, _, init_loss = self.gmbl_step(
-                task_model,
-                supp_src_inputs,
-                supp_tgt_inputs,
-                supp_labels,
-                adapt_steps=self.train_k,
-                first_order=first_order,
-            )
+                logs["supp_pre_loss"] += [loss.detach().cpu()]
+                logs["query_post_loss"] += [loss.detach().cpu()]
 
-            logs["supp_pre_loss"] += [init_loss]
+            else:
+                # Clone the model for task-specific adaptation
+                task_model = self.meta_learner.clone()
 
-            # ==================================================================
-            # Query / Outer loop optimization
-            # ==================================================================
+                # ==================================================================
+                # Support / Inner loop optimization
+                # ==================================================================
 
-            task_model, loss, init_loss = self.gmbl_step(
-                task_model,
-                query_src_inputs,
-                query_tgt_inputs,
-                query_labels,
-                adapt_steps=0,
-                first_order=first_order,
-            )
+                task_model, _, init_loss = self.gmbl_step(
+                    task_model,
+                    supp_src_inputs,
+                    supp_tgt_inputs,
+                    supp_labels,
+                    adapt_steps=self.train_k,
+                    first_order=first_order,
+                )
 
-            meta_batch_loss += loss
+                logs["supp_pre_loss"] += [init_loss]
 
-            logs["query_post_loss"] += [init_loss]
+                # ==================================================================
+                # Query / Outer loop optimization
+                # ==================================================================
+
+                task_model, loss, init_loss = self.gmbl_step(
+                    task_model,
+                    query_src_inputs,
+                    query_tgt_inputs,
+                    query_labels,
+                    adapt_steps=0,
+                    first_order=first_order,
+                )
+
+                meta_batch_loss += loss
+
+                logs["query_post_loss"] += [init_loss]
 
             logs["objective"] += [objective]
             logs["batch_size"] += [query_labels.size(0)]

@@ -16,7 +16,7 @@ sanity_check: True
 
 cutoff: null
 valid_size: 0.1
-max_steps: 100000
+max_steps: 86477
 eval_every_n_steps: 10000
 patience: 3
 lr_reduce: 0.5
@@ -35,28 +35,29 @@ data:
 
 trainer:
   model_name: Helsinki-NLP/opus-mt-en-cs
+  loss_weight: 0.2
   nmt_kwargs:
-    label_smoothing: 0.1
+    label_smoothing: 0.0
     dropout: 0.1
     seq_mask: 0.0
   morph_tag_clf_kwargs:
     layer_dropout: 0.2
     dropout: 0.2
     hidden_dim: 256
-    label_smoothing: 0.1
+    label_smoothing: 0.0
   optimizer_algorithm: adamw
   optimizer_kwargs:
-    nmt_lr: 1e-6
+    nmt_lr: 5e-6
     clf_lr: 5e-4
     betas:
       - 0.9
       - 0.98
-    weight_decay: 1e-2
+    weight_decay: 1e-1
     grad_val: 2.0
     grad_norm: 5.0
-  optimizer_scheduler: inv_sqrt
+  optimizer_scheduler: linear
   optimizer_scheduler_kwargs:
-    n_warmup_steps: 16000
+    n_warmup_steps: 150000
 
 data_loader:
   max_tokens: 512

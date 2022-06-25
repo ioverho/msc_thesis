@@ -92,7 +92,7 @@ class FineTuner(nn.Module):
         # Marian NMT model =============================================================
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, enable_sampling=False
+            self.model_name
         )
 
         self.model_config = AutoConfig.from_pretrained(model_name)
@@ -319,6 +319,8 @@ class MutliTaskMorphTagTrainer(nn.Module):
         morph_tag_clf_kwargs: dict,
         nmt_kwargs: dict,
         tag_to_int: typing.Dict[str, int],
+        loss_weight: float = 0.5,
+        checkpoint_path: typing.Optional[str] = None,
         optimizer_scheduler: typing.Optional[str] = None,
         optimizer_kwargs: typing.Optional[dict] = dict(),
         optimizer_scheduler_kwargs: typing.Optional[dict] = dict(),
@@ -331,16 +333,25 @@ class MutliTaskMorphTagTrainer(nn.Module):
         # ======================================================================
         # Marian NMT model =============================================================
         self.model_name = model_name
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, enable_sampling=False
-        )
 
-        self.model_config = AutoConfig.from_pretrained(model_name)
-        self.model_config.dropout = nmt_kwargs.get("dropout", 0.1)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(
-            self.model_name,
-            config=self.model_config
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+
+        if checkpoint_path is None:
+            self.model_config = AutoConfig.from_pretrained(model_name)
+            self.model_config.dropout = nmt_kwargs.get("dropout", 0.1)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_name,
+                config=self.model_config
+            )
+
+        else:
+            print(f"Loading from: {checkpoint_path}")
+            self.model_config = AutoConfig.from_pretrained(self.model_name)
+            self.model_config.dropout = nmt_kwargs.get("dropout", 0.1)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                checkpoint_path,
+                config=self.model_config
+                )
 
         self.seq_mask = SequenceMask(
             mask_p = nmt_kwargs.get("seq_mask", 0.0),
@@ -413,6 +424,16 @@ class MutliTaskMorphTagTrainer(nn.Module):
         if optimizer_scheduler is None:
             self.optimizer_scheduler = DummyScheduler()
 
+        elif optimizer_scheduler.lower() == "linear":
+
+            self.nmt_optimizer_scheduler = LinearDecay(
+                self.nmt_optimizer, **optimizer_scheduler_kwargs
+            )
+
+            self.clf_optimizer_scheduler = InvSqrtWithLinearWarmupScheduler(
+                self.clf_optimizer, 0.04 * optimizer_scheduler_kwargs["n_warmup_steps"]
+            )
+
         elif optimizer_scheduler.lower() == "inv_sqrt":
 
             self.nmt_optimizer_scheduler = InvSqrtWithLinearWarmupScheduler(
@@ -437,6 +458,8 @@ class MutliTaskMorphTagTrainer(nn.Module):
 
         self.nmt_label_smoothing = nmt_kwargs.get("label_smoothing", 0)
         self.morph_tag_label_smoothing = morph_tag_clf_kwargs.get("label_smoothing", 0)
+
+        self.loss_weight = loss_weight
 
         # ======================================================================
         # Tracking metrics
@@ -545,7 +568,7 @@ class MutliTaskMorphTagTrainer(nn.Module):
             "train/seq_lengths": sum([len(ref) for ref in ref_tokens]) / labels.size(0)
         }
 
-        return nmt_loss + morph_tags_loss, logs
+        return (1-self.loss_weight) * nmt_loss + self.loss_weight * morph_tags_loss, logs
 
     def optimize(self, loss, logs):
 
