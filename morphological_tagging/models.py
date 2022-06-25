@@ -1494,7 +1494,7 @@ class DogTagSmall(JointTaggerLemmatizer):
         # ======================================================================
         # Module hyperparmeters ================================================
         self.transformer_type = "canine"
-        self.transformer_name = "google/canine-s"
+        self.transformer_name = "google/canine-c"
         self.transformer_dropout = transformer_dropout
         self.mha_kwargs = mha_kwargs
         self.batch_first = batch_first
@@ -1985,6 +1985,8 @@ class DogTag(JointTaggerLemmatizer):
             self.transformer_name, use_fast=True
         )
 
+        self.char_dropout = nn.Dropout(p=self.embedding_dropout)
+
         self.token_mha = MultiHeadSequenceAttention(
             d_in=self.h_dim,
             d_out=self.h_dim,
@@ -2065,6 +2067,7 @@ class DogTag(JointTaggerLemmatizer):
 
     def _trainable_modules(self):
         reg_params = [
+            self.char_dropout,
             self.token_mha,
             self.token_dropout,
             self.token_rnn,
@@ -2161,6 +2164,9 @@ class DogTag(JointTaggerLemmatizer):
             tokenizer_output["input_ids"].to(self.device),
             tokenizer_output["attention_mask"].to(self.device),
         ).last_hidden_state
+
+        # Dropout over the contextualized character embeddings
+        cce = self.char_dropout(cce)
 
         # Break the batch from a batch of sentence characters to a batch of token characters
         # Also generate an attention map for pooling operation

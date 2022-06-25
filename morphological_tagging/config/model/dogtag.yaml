@@ -1,8 +1,8 @@
 batch_first: True
-transformer_dropout: 0.2
+transformer_dropout: 0.1
 embedding_dropout: 0.5
 mha_kwargs:
-  n_heads: 16
+  n_heads: 1
   dropout: 0.25
 rnn_kwargs:
   num_layers: 3
@@ -22,10 +22,10 @@ transformer_lrs:
   pooler: 5.0e-5
 rnn_lr: 1.0e-3
 clf_lr: 2.5e-3
-n_warmup_steps: 0.04
+n_warmup_steps: 0.08
 optim_kwargs:
   betas:
     - 0.9
-    - 0.99
+    - 0.999
   weight_decay: 1.0e-2
 unfreeze_transformer_epoch: 1
