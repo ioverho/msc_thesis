@@ -9,7 +9,6 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoTokenizer, AutoModel
 
-from morphological_tagging.data.corpus import TreebankDataModule
 from morphological_tagging.data.lemma_script import apply_lemma_script
 from morphological_tagging.preprocessor import UDPipe2PreProcessor
 from morphological_tagging.modules import (
@@ -306,6 +305,8 @@ class UDPipe2Pipeline(nn.Module):
             param.requires_grad = False
 
     def load_vocabs_from_treebankdatamodule_checkpoint(self, fp: str):
+
+        from morphological_tagging.data.corpus import TreebankDataModule
 
         dm = TreebankDataModule.load(fp)
 
@@ -869,6 +870,8 @@ class DogTagPipeline(nn.Module):
             param.requires_grad = False
 
     def load_vocabs_from_treebankdatamodule_checkpoint(self, fp: str):
+
+        from morphological_tagging.data.corpus import TreebankDataModule
 
         dm = TreebankDataModule.load(fp)
 

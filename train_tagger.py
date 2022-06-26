@@ -27,6 +27,7 @@ from morphological_tagging.models import (
     UDIFYFineTune,
     DogTag,
     DogTagSmall,
+    DogTagFineTune,
 )
 from utils.experiment import find_version, set_seed, set_deterministic, Timer
 from utils.errors import ConfigurationError
@@ -253,9 +254,21 @@ def train(config: DictConfig):
             **config["model"],
         )
 
+    elif config["architecture"].lower() == "dogtag_finetune":
+        model = DogTagFineTune(
+            file_path=config["file_path"],
+            device=device,
+            idx_char_pad=corpus.char_vocab[corpus.pad_token],
+            idx_token_pad=corpus.token_vocab[corpus.pad_token],
+            n_lemma_scripts=len(corpus.script_counter),
+            n_morph_tags=len(corpus.morph_tag_vocab),
+            n_morph_cats=len(corpus.morph_cat_vocab),
+            **config["model"],
+        )
+
     else:
         raise NotImplementedError(
-            "Architecture {config['architecture'].lower()} not recognized."
+            f"Architecture {config['architecture'].lower()} not recognized."
         )
 
     # *==========================================================================

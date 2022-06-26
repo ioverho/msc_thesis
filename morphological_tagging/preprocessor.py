@@ -8,8 +8,6 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 import torchtext
 from torchtext.vocab import Vectors
-import nltk
-from nltk.tokenize import word_tokenize
 
 from transformers import AutoConfig, AutoTokenizer, AutoModel
 from utils.errors import ConfigurationError
@@ -72,7 +70,6 @@ class UDPipe2PreProcessor(nn.Module):
         self,
         word_embeddings: bool,
         context_embeddings: bool,
-        tokenizer: Callable = None,
         language: str = "English",
         lower_case_backup: bool = False,
         transformer_name: str = "distilbert-base-multilingual-cased",
@@ -80,11 +77,11 @@ class UDPipe2PreProcessor(nn.Module):
         layer_pooling: str = "average",
         n_layers_pooling: int = 4,
         wordpiece_pooling: str = "first",
+        **unused_kwargs,
     ) -> None:
         super().__init__()
 
         self.word_embeddings = word_embeddings
-        self.tokenizer = tokenizer
         self.context_embeddings = context_embeddings
         self.language = language
         self.lower_case_backup = lower_case_backup
@@ -93,12 +90,6 @@ class UDPipe2PreProcessor(nn.Module):
         self.layer_pooling = layer_pooling
         self.n_layers_pooling = n_layers_pooling
         self.wordpiece_pooling = wordpiece_pooling
-
-        #! DEPRECATED: tokenization is handled elsewhere
-        if tokenizer is None:
-            self.tokenizer = word_tokenize
-        else:
-            self.tokenizer = tokenizer
 
         if self.word_embeddings:
             self.vecs = FastText(language=FASTTEXT_LANG_CONVERSION[self.language])
@@ -189,6 +180,7 @@ class UDPipe2PreProcessor(nn.Module):
             param.requires_grad = True
 
     def _unpack_input(self, batch):
+        raise NotImplementedError("Can only accept pre-tokenized text now.")
 
         if isinstance(batch, list):
             tokens_raw = batch
