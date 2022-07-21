@@ -25,7 +25,7 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 TRANSLATIONS_DIR = "./nmt_adapt/translations"
 
-def load_nmt_checkpoint(checkpoint_dir = None, model_name = None):
+def load_nmt_checkpoint(checkpoint_dir = None, model_name = None, latest: bool = False):
 
     if checkpoint_dir is not None:
         with open(f"{checkpoint_dir}/config.yaml", "r") as f:
@@ -53,10 +53,15 @@ def load_nmt_checkpoint(checkpoint_dir = None, model_name = None):
 
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name, config=model_config)
 
-    if checkpoint_dir is not None:
-        model.load_state_dict(torch.load(f"{checkpoint_dir}/checkpoints/best.ckpt"))
+    variant = "latest" if latest else "best"
+    path = f"{checkpoint_dir}/checkpoints/{variant}.ckpt"
 
-    return tokenizer, model,name
+
+    if checkpoint_dir is not None:
+        print(f"Loading weights from: {path}")
+        model.load_state_dict(torch.load(path))
+
+    return tokenizer, model, name
 
 def generate_translations(config):
 
@@ -114,6 +119,7 @@ def generate_translations(config):
     tokenizer, model, name = load_nmt_checkpoint(
         config.get("checkpoint_dir", None),
         config.get("model_name", None),
+        config.get("latest", False),
         )
 
     model.eval()

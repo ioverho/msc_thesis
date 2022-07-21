@@ -12,11 +12,12 @@ import pycountry
 
 from morphological_tagging.pipelines import UDPipe2Pipeline
 from nmt_adapt.data.corpus_functional import load_custom_dataset
-from nmt_adapt.inverse_index import InverseIndex
+from nmt_adapt.inverse_index import InverseIndexv2
 from nmt_adapt.metrics import token_metrics, morphological_metrics, entropy
 from utils.experiment import HidePrints, Timer, set_seed, set_deterministic
 from utils.tokenizers import MosesTokenizerWrapped
 
+INDICES_LOC = "./nmt_adapt/data/indices/"
 EVAL_STATS_LOC = "./nmt_adapt/eval"
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
@@ -100,33 +101,26 @@ def eval_nmt(config):
     # *==========================================================================
     print(f"\n{timer.time()} | BUILDING INVERTED INDEX")
     if config["index"].get("fp", None) is None:
-        index = InverseIndex(
-            par_data,
-            filter_level=config["index"]["filter_level"],
+        print("\nBuilding index.")
+        index = InverseIndexv2(
+            par_data=par_data,
             index_level=config["index"]["index_level"],
+            filter_level=config["index"]["filter_level"],
         )
-        print(
-            f"Built index. Index has {len(index.keys())} keys, and {len(index)} values."
-        )
+        print("Built index.")
+        print(index.length_str)
+        index.reduce(**config["index"]["reduce"])
+        print(index.length_str)
+        print(f"Document coverage of {index.coverage}/{len(par_data)}")
 
-        if config["index"].get("index_filter_vals", None) is not None:
-            index.filter(filter_vals=set(config["index"]["index_filter_vals"]))
-            print(
-                f"Filtered index. Index has {len(index.keys())} keys, and {len(index)} values."
-            )
-
-        index.reduce(
-            par_data,
-            max_samples=config["index"]["max_tag_samples"],
-            min_samples=config["index"].get("min_tag_samples", 0),
-            stratified=config["index"].get("stratified", True),
-        )
-        print(
-            f"Reduced index. Index has {len(index.keys())} keys, and {len(index)} values."
+        index.save(
+            INDICES_LOC
+            + config["data"]["dataset_name"]
+            + f"_{config['src_lang'].lower()}_{config['tgt_lang'].lower()}.pickle"
         )
 
     else:
-        index = InverseIndex.load(config["index"]["fp"])
+        index = InverseIndexv2.load(config["index"]["fp"])
         print(f"Loaded index from {config['index']['fp']}.")
         print(f"Index has {len(index.keys())} keys, and {len(index)} values.")
 
@@ -148,7 +142,18 @@ def eval_nmt(config):
         model_name, enable_sampling=False, nbest_size=0,
     )
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    if config.get("checkpoint_path", None) is None:
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            model_name,
+            config=model_config,
+            )
+
+    else:
+        model  = AutoModelForSeq2SeqLM.from_pretrained(
+            config["checkpoint_path"],
+            config=model_config,
+            )
+
     model.eval()
     for param in model.parameters():
         param.require_grad = False
@@ -174,7 +179,10 @@ def eval_nmt(config):
     tgt_prefix = tokenizer.pad_token
 
     timestamp = datetime.now().strftime("%y%m%d_%H%M")
-    stats_fp = f"{EVAL_STATS_LOC}/{timestamp}_{src_lang.name}_{tgt_lang.name}.pickle"
+    stats_fp = f"{EVAL_STATS_LOC}/{timestamp}_{config['data']['dataset_name']}"
+    stats_fp += f"_{config['data']['split']}" if config['data'].get('split', None) is not None else ""
+    stats_fp += f"_{config['note']}" if config.get('note', None) is not None else ""
+    stats_fp += f"_{src_lang.name}_{tgt_lang.name}.pickle"
 
     morph_tag_stats = defaultdict(lambda: defaultdict(list))
     for i, (morph_tag_set, (sent_id, t)) in enumerate(iter(index)):
@@ -182,7 +190,7 @@ def eval_nmt(config):
 
         # Make **certain** the index still points to the correct examples
         assert set(par_data[sent_id]["morph_tags"][t]) == set(
-            morph_tag_set
+            morph_tag_set.morph_tag_set
         ), f"({sent_id}, {t}) is {set(par_data[sent_id]['morph_tags'][t])} not {set(morph_tag_set)}"
 
         ref_context = par_data[sent_id]["tgt_tokens"][:t]

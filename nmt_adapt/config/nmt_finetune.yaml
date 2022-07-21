@@ -6,7 +6,7 @@ defaults:
 
 gpu: 1
 
-experiment_name: nmt_adapt_test
+experiment_name: nmt_adapt_baselines
 
 baseline: fine_tune
 
@@ -16,7 +16,7 @@ sanity_check: True
 
 cutoff: null
 valid_size: 0.1
-max_steps: 100000
+max_steps: 86477
 eval_every_n_steps: 10000
 patience: 3
 lr_reduce: 0.5
@@ -24,7 +24,7 @@ save_every_n: null
 
 logging:
   logger_kwargs:
-    job_type: test_finetune
+    job_type: finetune
     mode: online
     project: nmt_adapt_baselines
 
@@ -36,21 +36,21 @@ data:
 trainer:
   model_name: Helsinki-NLP/opus-mt-en-cs
   nmt_kwargs:
-    label_smoothing: 0.1
+    label_smoothing: 0.0
     dropout: 0.1
     seq_mask: 0.0
   optimizer_algorithm: adamw
   optimizer_kwargs:
-    nmt_lr: 1e-6
+    nmt_lr: 5.0e-6
     betas:
       - 0.9
       - 0.999
-    weight_decay: 1e-2
+    weight_decay: 1e-1
     grad_val: 2.0
     grad_norm: 5.0
-  optimizer_scheduler: inv_sqrt
+  optimizer_scheduler: linear
   optimizer_scheduler_kwargs:
-    n_warmup_steps: 16000
+    n_warmup_steps: 86477
 
 data_loader:
   max_tokens: 512

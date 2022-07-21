@@ -46,7 +46,7 @@ class InverseIndexv2(object):
                 ):
                     filter_val = doc["lemma_scripts"]
                 elif self.filter_level == "tag_set" or self.filter_level is None:
-                    filter_val = [None for _ in doc["tokens"]]
+                    filter_val = [None for _ in range(len(doc["morph_tags"]))]
 
                 # Get the index keys
                 for tok_id, key_parts in enumerate(
@@ -204,6 +204,27 @@ class InverseIndexv2(object):
 
         return InverseIndexv2(**state_dict)
 
+    def __iter__(self, shuffle: bool = True):
+
+        # Now forces a stratified sampling scheme
+        # Will sample in cycles from each task, until tasks are exhausted
+        # e.g. tasks might be a, b, c, a, b, a, b, a, a, ...
+        stratified_sequence = defaultdict(list)
+        for k, v in self.index.items():
+            i = 0
+            for kk in random.sample(list(v.keys()), len(v)):
+                for vv in random.sample(v[kk], len(v[kk])) if shuffle else v[kk]:
+                    stratified_sequence[i].append((k, vv))
+                    i += 1
+
+        stratified_sequence = [
+            (k, v)
+            for _, l in sorted(stratified_sequence.items(), key=lambda x: x[0])
+            for (k, v) in l
+        ]
+
+        for item in stratified_sequence:
+            yield item
 
 class InverseIndex(object):
     """A class that generates an inverted index and provides filtering, reducing and sampling, utilities.

@@ -88,7 +88,6 @@ class TokenClassifier(nn.Module):
         )
 
         self.clf = nn.Sequential(
-            nn.Dropout(p=dropout),
             nn.Linear(
                 in_features=in_features,
                 out_features=hidden_dim,

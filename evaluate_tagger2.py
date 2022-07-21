@@ -53,6 +53,9 @@ def eval(config):
 
     data_module = TreebankDataModule.load(expected_dataset_path)
 
+    train_tokens_vocab = set(data_module.train_corpus.dataset.token_vocab.get_stoi().keys())
+    train_lemmas_vocab = {lemma for i in data_module.corpus.splits["train"] for lemma in data_module.corpus[i].lemmas}
+
     # ==========================================================================
     # Model Import
     # ==========================================================================
@@ -253,7 +256,17 @@ def eval(config):
                     morph_rel += mt_gt_
 
                     pickle.dump(
-                        (token, lm_gt, lm_pred, ls_gt, ls_pred, mt_gt, mt_pred,), f,
+                        (
+                            token,
+                            lm_gt,
+                            lm_pred,
+                            ls_gt,
+                            ls_pred,
+                            mt_gt,
+                            mt_pred,
+                            token in train_tokens_vocab,
+                            lm_gt in train_lemmas_vocab
+                            ), f,
                     )
 
         token_rate = n_tokens / timer2.time().seconds

@@ -6,7 +6,7 @@ defaults:
 
 gpu: 1
 
-experiment_name: nmt_adapt_test
+experiment_name: nmt_adapt_baselines
 
 baseline: multi_task_morph_tag
 
@@ -24,7 +24,7 @@ save_every_n: null
 
 logging:
   logger_kwargs:
-    job_type: test_multi_task_morph_tag
+    job_type: multi_task_morph_tag
     mode: online
     project: nmt_adapt_baselines
 
@@ -41,23 +41,23 @@ trainer:
     dropout: 0.1
     seq_mask: 0.0
   morph_tag_clf_kwargs:
-    layer_dropout: 0.2
+    layer_dropout: 0.5
     dropout: 0.2
     hidden_dim: 256
     label_smoothing: 0.0
   optimizer_algorithm: adamw
   optimizer_kwargs:
-    nmt_lr: 5e-6
-    clf_lr: 5e-4
+    nmt_lr: 5.0e-6
+    clf_lr: 5.0e-5
     betas:
       - 0.9
-      - 0.98
+      - 0.999
     weight_decay: 1e-1
     grad_val: 2.0
     grad_norm: 5.0
   optimizer_scheduler: linear
   optimizer_scheduler_kwargs:
-    n_warmup_steps: 150000
+    n_warmup_steps: 86477
 
 data_loader:
   max_tokens: 512

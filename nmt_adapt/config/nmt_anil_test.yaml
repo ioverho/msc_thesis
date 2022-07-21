@@ -4,16 +4,16 @@ defaults:
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
-experiment_name: nmt_adapt_test
+experiment_name: nmt_adapt
 
 print_hparams: True
 debug: False
 gpu: 1
 sanity_check: true
 
-patience: 3
-lr_reduce: 0.4642
-save_every_n: null
+patience: 10
+lr_reduce: 1.0
+save_every_n: 1
 
 epochs: 10
 steps_per_epoch: 5000
@@ -42,10 +42,13 @@ trainer:
   model_name: "Helsinki-NLP/opus-mt-en-cs"
   meta_learner_algorithm: "anil"
   inner_lr: 1.0e-3
-  meta_optimizer_algorithm: adamw
   meta_lr: 5.0e-6
+  meta_optimizer_algorithm: adamw
   meta_optimizer_kwargs:
-    weight_decay: 1.0e-2
+    weight_decay: 1.0e-1
+    betas:
+      - 0.9
+      - 0.999
   meta_optimizer_scheduler: linear
   meta_optimizer_scheduler_kwargs:
     n_warmup_steps: 20000
@@ -61,6 +64,6 @@ data_loader:
   mode: cross_transfer
   n_lemmas_per_task: 4
   n_samples_per_lemma: 2
-  p_full_nmt: 0.25
-  p_uninformed: 0.25
+  p_full_nmt: 0.50
+  p_uninformed: 0.00
   eval_uninformed: False
